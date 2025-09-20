@@ -350,164 +350,140 @@ function extractAnimationsFallback(data, validation) {
 
 // **NEW: Collect skins and attachments safely**
 function collectSkinsAndAttachments(spineDataNormalized, allRegions, validation) {
-  const { type } = spineDataNormalized;
-  
-  // Handle different skin structures
-  let skins = [];
-  
-  switch (type) {
-    case 'standard':
-    case 'legacy':
-      skins = Array.isArray(spineDataNormalized.skins) ? spineDataNormalized.skins : [];
-      break;
-      
-    case 'complex':
-    case 'object-animations':
-      if (Array.isArray(spineDataNormalized.skins)) {
-        skins = spineDataNormalized.skins;
-      } else if (spineDataNormalized.skins && typeof spineDataNormalized.skins === 'object') {
-        skins = Object.values(spineDataNormalized.skins).filter(s => s && (s.name || s.skin));
-      }
-      break;
-      
-    default:
-      skins = Array.isArray(spineDataNormalized.skins) ? spineDataNormalized.skins : [];
+  // Robust handling for both object-mapped skins (Spine JSON) and array-style skins
+  const skinsRoot = spineDataNormalized.skins;
+  if (!skinsRoot) {
+    // fallback to default attachments check
+    checkDefaultAttachments(spineDataNormalized, allRegions, validation);
+    showTerminal('No skins found in JSON, checked default slot attachments');
+    return;
   }
-  
-  showTerminal(`Processing ${skins.length} skins`);
 
-  // Process each skin
-  skins.forEach(skin => {
-    if (!skin || typeof skin !== 'object') return;
-    
-    const skinName = skin.name || skin.skin || 'default';
-    if (!validation.skins[skinName]) {
-      validation.skins[skinName] = {
-        attachments: {},
-        missing: [],
-        total: 0
-      };
+  function ensureSkinEntry(name) {
+    if (!validation.skins[name]) {
+      validation.skins[name] = { attachments: {}, missing: [], total: 0 };
     }
+  }
 
-    // Handle different attachment structures
-    const attachments = getSkinAttachments(skin);
-    
-    if (attachments && typeof attachments === 'object') {
-      Object.entries(attachments).forEach(([slotName, slotAttachments]) => {
-        if (typeof slotAttachments === 'object' && slotAttachments !== null) {
-          // Handle both array and object formats
-          const attachmentsToCheck = Array.isArray(slotAttachments) ? slotAttachments : Object.values(slotAttachments);
-          
-          attachmentsToCheck.forEach(attachment => {
-            if (isValidAttachment(attachment)) {
-              validation.skins[skinName].total++;
-              validation.totalAttachments++;
-              
-              const attachmentName = getAttachmentName(attachment).toLowerCase();
-              
-              if (!allRegions.has(attachmentName)) {
-                const missingEntry = {
-                  skin: skinName,
-                  slot: slotName || 'unknown',
-                  attachment: getAttachmentName(attachment)
-                };
-                
-                // Avoid duplicates
-                const exists = validation.missingAttachments.some(m => 
-                  m.skin === missingEntry.skin && 
-                  m.slot === missingEntry.slot && 
-                  m.attachment === missingEntry.attachment
-                );
-                
-                if (!exists) {
-                  validation.missingAttachments.push(missingEntry);
-                  validation.skins[skinName].missing.push(getAttachmentName(attachment));
-                }
-              } else {
-                validation.skins[skinName].attachments[getAttachmentName(attachment)] = true;
-              }
-            }
-          });
-        }
+  function addMissing(skinName, slotName, attachmentName) {
+    const missingEntry = { skin: skinName, slot: slotName || 'unknown', attachment: attachmentName };
+    const exists = validation.missingAttachments.some(m =>
+      m.skin === missingEntry.skin && m.slot === missingEntry.slot && m.attachment === missingEntry.attachment
+    );
+    if (!exists) {
+      validation.missingAttachments.push(missingEntry);
+      validation.skins[skinName].missing.push(attachmentName);
+    }
+  }
+
+  function markFound(skinName, attachmentName) {
+    validation.skins[skinName].attachments[attachmentName] = true;
+  }
+
+  // Helper: determine if an attachment should be validated against atlas regions
+  function isTextureAttachment(att) {
+    if (typeof att === 'string') return true; // string name -> likely a region
+    if (!att || typeof att !== 'object') return true;
+    const type = (att.type || '').toLowerCase();
+    // Only these attachment types reference textures/regions
+    return type === '' || type === 'region' || type === 'mesh' || type === 'skinnedmesh' || type === 'linkedmesh';
+  }
+
+  // Helper: get the actual image/region name for an attachment object
+  function getAttachmentImageName(attObj, fallbackKey) {
+    if (typeof attObj === 'string') return attObj;
+    if (!attObj || typeof attObj !== 'object') return fallbackKey || null;
+    // common keys that identify which atlas region to use
+    return attObj.path || attObj.name || attObj.image || fallbackKey || null;
+  }
+
+  function processSlotAttachments(skinName, slotName, slotAttachments) {
+    if (slotAttachments == null) return;
+
+    // array of attachments (legacy or alternative formats)
+    if (Array.isArray(slotAttachments)) {
+      slotAttachments.forEach(att => {
+        let attName = null;
+        if (typeof att === 'string') attName = att;
+        else if (att && typeof att === 'object') attName = getAttachmentImageName(att, null);
+        if (!attName) return;
+        // skip non-texture attachments (e.g. clipping, boundingbox, path)
+        if (att && typeof att === 'object' && !isTextureAttachment(att)) return;
+        validation.skins[skinName].total++;
+        validation.totalAttachments++;
+        const region = attName.toLowerCase();
+        if (!allRegions.has(region)) addMissing(skinName, slotName, attName);
+        else markFound(skinName, attName);
       });
+      return;
     }
-  });
 
-  // Check default attachments if no skins defined
-  if (skins.length === 0) {
+    // object mapping: attachmentName -> attachmentData (this is the most common Spine JSON format)
+    if (typeof slotAttachments === 'object') {
+      const keys = Object.keys(slotAttachments);
+      keys.forEach(k => {
+        const attObj = slotAttachments[k];
+        // Some attachment objects are metadata (clipping etc.). Determine image name and type.
+        const attName = k || getAttachmentImageName(attObj, k) || null;
+        if (!attName) return;
+        // If attachment object exists and is non-texture, skip it (e.g. clipping mask)
+        if (attObj && !isTextureAttachment(attObj)) {
+          // skip validation for non-texture attachment types like clipping
+          return;
+        }
+        validation.skins[skinName].total++;
+        validation.totalAttachments++;
+        const region = attName.toLowerCase();
+        if (!allRegions.has(region)) addMissing(skinName, slotName, attName);
+        else markFound(skinName, attName);
+      });
+      return;
+    }
+
+    // string (single attachment name)
+    if (typeof slotAttachments === 'string') {
+      const attName = slotAttachments;
+      validation.skins[skinName].total++;
+      validation.totalAttachments++;
+      if (!allRegions.has(attName.toLowerCase())) addMissing(skinName, slotName, attName);
+      else markFound(skinName, attName);
+    }
+  }
+
+  // If skins is an array (rare) each skin might have its own shape
+  if (Array.isArray(skinsRoot)) {
+    Object.values(skinsRoot).forEach(skin => {
+      const skinName = skin && (skin.name || skin.skin) ? (skin.name || skin.skin) : 'default';
+      ensureSkinEntry(skinName);
+      // root of attachments may be the skin object itself or skin.attachments / skin.slots
+      const root = skin.attachments || skin.slots || skin;
+      if (!root || typeof root !== 'object') return;
+      Object.entries(root).forEach(([slotName, slotAttachments]) => {
+        processSlotAttachments(skinName, slotName, slotAttachments);
+      });
+    });
+  } else if (typeof skinsRoot === 'object') {
+    // Common Spine JSON: skins is an object mapping skinName -> { slotName -> { attachmentName -> data } }
+    Object.entries(skinsRoot).forEach(([skinName, skinContent]) => {
+      const name = skinName || 'default';
+      ensureSkinEntry(name);
+      if (!skinContent || typeof skinContent !== 'object') return;
+      // skinContent usually maps slotName -> { attachmentName -> data }
+      const root = skinContent.attachments || skinContent.slots || skinContent;
+      Object.entries(root).forEach(([slotName, slotAttachments]) => {
+        processSlotAttachments(name, slotName, slotAttachments);
+      });
+    });
+  }
+
+  // If no skins discovered (defensive), check default attachments from slots
+  if (Object.keys(validation.skins).length === 0) {
     checkDefaultAttachments(spineDataNormalized, allRegions, validation);
   }
 
   showTerminal(`Attachment validation complete: ${validation.totalAttachments} total, ${validation.missingAttachments.length} missing`);
 }
-
-// **NEW: Helper functions for attachment processing**
-function getSkinAttachments(skin) {
-  // Try different possible locations for attachments
-  return skin.attachments || 
-         skin.slots || 
-         skin.data?.attachments ||
-         skin.attachmentsData ||
-         skin.attachment;
-}
-
-function isValidAttachment(attachment) {
-  return attachment && 
-         typeof attachment === 'object' && 
-         (attachment.name || attachment.path || attachment.image || attachment.region);
-}
-
-function getAttachmentName(attachment) {
-  return attachment.name || 
-         attachment.path || 
-         attachment.image || 
-         attachment.region || 
-         attachment.texture || 
-         'unknown';
-}
-
-function checkDefaultAttachments(spineData, allRegions, validation) {
-  // Check slots for default attachments
-  if (spineData.slots && Array.isArray(spineData.slots)) {
-    spineData.slots.forEach(slot => {
-      if (slot && (slot.attachment || slot.defaultAttachment)) {
-        const attachmentName = slot.attachment || slot.defaultAttachment;
-        if (typeof attachmentName === 'string') {
-          validation.totalAttachments++;
-          const regionName = attachmentName.toLowerCase();
-          
-          if (!allRegions.has(regionName)) {
-            const missingEntry = {
-              skin: 'default',
-              slot: slot.name || 'unknown',
-              attachment: attachmentName
-            };
-            
-            // Avoid duplicates
-            const exists = validation.missingAttachments.some(m => 
-              m.skin === missingEntry.skin && 
-              m.attachment === missingEntry.attachment
-            );
-            
-            if (!exists) {
-              validation.missingAttachments.push(missingEntry);
-              if (!validation.skins['default']) {
-                validation.skins['default'] = { attachments: {}, missing: [], total: 0 };
-              }
-              validation.skins['default'].missing.push(attachmentName);
-            }
-          } else {
-            if (!validation.skins['default']) {
-              validation.skins['default'] = { attachments: {}, missing: [], total: 0 };
-            }
-            validation.skins['default'].attachments[attachmentName] = true;
-            validation.skins['default'].total++;
-          }
-        }
-      }
-    });
-  }
-}
+// ...existing code...
 
 function displayValidationResults(validation) {
   validationStatus.textContent = '';
