@@ -1,0 +1,102 @@
+body {
+    margin: 0;
+    padding: 0;
+    font-family: Arial, sans-serif;
+    background: #000;
+    color: #fff;
+    overflow: hidden;
+}
+
+#controls {
+    position: absolute;
+    top: 10px;
+    left: 10px;
+    z-index: 100;
+    background: rgba(0,0,0,0.8);
+    padding: 15px;
+    border-radius: 8px;
+    border: 1px solid #333;
+}
+
+#dropZone {
+    padding: 20px;
+    border: 2px dashed #666;
+    border-radius: 8px;
+    text-align: center;
+    margin-bottom: 10px;
+    cursor: pointer;
+    transition: all 0.3s;
+}
+
+#dropZone:hover, #dropZone.dragover {
+    border-color: #00ff00;
+    background: rgba(0,255,0,0.1);
+}
+
+.file-inputs {
+    display: flex;
+    gap: 10px;
+    margin-bottom: 10px;
+    flex-wrap: wrap;
+}
+
+.file-inputs label {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 12px;
+}
+
+.selectors {
+    display: flex;
+    gap: 15px;
+    margin-top: 10px;
+}
+
+.selectors label {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 12px;
+}
+
+select {
+    background: #333;
+    color: #fff;
+    border: 1px solid #666;
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-size: 12px;
+}
+
+#warnBox {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    background: #ff4444;
+    color: white;
+    padding: 10px;
+    border-radius: 4px;
+    display: none;
+    z-index: 100;
+    max-width: 300px;
+}
+
+#terminalBox {
+    position: absolute;
+    bottom: 10px;
+    right: 10px;
+    background: #000;
+    color: #00ff00;
+    padding: 10px;
+    border-radius: 4px;
+    border: 1px solid #333;
+    display: none;
+    z-index: 100;
+    max-width: 400px;
+    max-height: 200px;
+    overflow-y: auto;
+    font-family: 'Courier New', monospace;
+    font-size: 11px;
+    white-space: pre-wrap;
+}
