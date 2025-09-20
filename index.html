@@ -2,8 +2,7 @@
 <html>
 <head>
     <meta charset="utf-8">
-    <title>Spine 3.7.9 Preview Tool</title>
-    <!-- Local libraries (downloaded manually to /libs) -->
+    <title>Spine 3.7.9 Preview Tool - Enhanced</title>
     <script src="libs/pixi.min.js"></script>
     <script src="libs/pixi-spine.js"></script>
     <link rel="stylesheet" href="style.css">
@@ -15,10 +14,19 @@
             <label>JSON: <input type="file" id="jsonInput" accept=".json"></label>
             <label>Atlas: <input type="file" id="atlasInput" accept=".atlas" multiple></label>
             <label>PNG: <input type="file" id="pngInput" accept=".png" multiple></label>
+            <button id="loadButton" disabled>Load & Validate</button>
         </div>
         <div class="selectors">
             <label>Skin: <select id="skinSelector"></select></label>
             <label>Animation: <select id="animSelector"></select></label>
+            <div class="validation-info">
+                <span id="validationStatus"></span>
+                <button id="revalidateButton" style="display: none;">Re-validate</button>
+            </div>
+        </div>
+        <div class="debug-info">
+            <span id="missingAttachments"></span>
+            <span id="animationStats"></span>
         </div>
     </div>
     <div id="warnBox"></div>
