@@ -104,7 +104,7 @@ async function validateSpineAssets() {
   clearTerminal();
   validationStatus.textContent = 'Validating...';
   revalidateButton.style.display = 'none';
-  
+
   try {
     // Step 1: Load and parse JSON
     const jsonContent = await readFileAsText(files.json);
@@ -123,7 +123,7 @@ async function validateSpineAssets() {
     // Step 2: Load atlas contents
     showTerminal('Loading atlas files...');
     const atlasContents = await Promise.all(
-      files.atlases.map((atlasFile, index) => 
+      files.atlases.map((atlasFile, index) =>
         readFileAsText(atlasFile).then(content => ({ content, index }))
       )
     );
@@ -183,8 +183,43 @@ async function validateSpineAssets() {
     // **FIX: Collect animations safely**
     collectAnimations(normalizedData, validation);
 
-    // **FIX: Collect skins and attachments safely**
-    collectSkinsAndAttachments(normalizedData, allRegions, validation);
+    // **REPLACE: use new extractor and merge its report into validation**
+    const attachmentReport = extractSpineAttachmentRequirements(normalizedData);
+    // Merge basic report data
+    validation.definedAttachments = attachmentReport.definedAttachments || [];
+    validation.requirementsMap = attachmentReport.requirementsMap || {};
+    validation.atlasRequirements = attachmentReport.atlasRequirements || [];
+    validation.errors = attachmentReport.errors || [];
+    validation.warnings = attachmentReport.warnings || [];
+    // Normalize skin structure into expected shape used by UI (attachments, missing, total)
+    validation.skins = {};
+    const reportSkins = attachmentReport.skinStructure || {};
+    Object.keys(reportSkins).forEach(skinName => {
+      const entries = Array.isArray(reportSkins[skinName]) ? reportSkins[skinName] : [];
+      const obj = { attachments: {}, missing: [], total: entries.length };
+      entries.forEach(att => { if (att) obj.attachments[att] = true; });
+      // compute per-skin missing vs provided atlas regions (allRegions available here)
+      try {
+        entries.forEach(att => {
+          if (!att) return;
+          if (!allRegions.has(String(att).toLowerCase())) obj.missing.push(att);
+        });
+      } catch (e) {
+        // defensive - if allRegions not ready, leave missing empty
+      }
+      validation.skins[skinName] = obj;
+    });
+    validation.totalAttachments = attachmentReport.stats ? attachmentReport.stats.totalAttachments : validation.totalAttachments;
+
+    // Compute missing attachments vs provided atlases
+    validation.missingAttachments = (validation.atlasRequirements || [])
+      .filter(att => {
+        if (!att) return false;
+        return !allRegions.has(String(att).toLowerCase());
+      })
+      .map(att => ({ slot: '', attachment: att }));
+
+    showTerminal(`Extracted ${validation.totalAttachments} attachment requirements, ${validation.missingAttachments.length} missing in provided atlases`);
 
     validationResults = validation;
     return validation;
@@ -198,7 +233,7 @@ async function validateSpineAssets() {
 function normalizeSpineData(spineData) {
   // Log the structure for debugging
   showTerminal(`JSON keys: ${Object.keys(spineData).join(', ')}`);
-  
+
   if (spineData.skeleton && spineData.animations && Array.isArray(spineData.animations)) {
     // Standard Spine JSON format
     return { ...spineData, type: 'standard' };
@@ -207,8 +242,8 @@ function normalizeSpineData(spineData) {
     return { ...spineData, type: 'legacy' };
   } else if (spineData.animations && !Array.isArray(spineData.animations)) {
     // Animations might be an object
-    return { 
-      ...spineData, 
+    return {
+      ...spineData,
       type: 'object-animations',
       animations: convertAnimationsToArray(spineData.animations)
     };
@@ -216,9 +251,9 @@ function normalizeSpineData(spineData) {
     // Try to detect structure
     const hasSkins = spineData.skins && (Array.isArray(spineData.skins) || typeof spineData.skins === 'object');
     const hasAnimations = spineData.animations && (Array.isArray(spineData.animations) || typeof spineData.animations === 'object');
-    
-    return { 
-      ...spineData, 
+
+    return {
+      ...spineData,
       type: hasSkins && hasAnimations ? 'complex' : 'unknown',
       animations: Array.isArray(spineData.animations) ? spineData.animations : []
     };
@@ -228,23 +263,23 @@ function normalizeSpineData(spineData) {
 // **NEW: Convert animations object to array**
 function convertAnimationsToArray(animationsObj) {
   if (Array.isArray(animationsObj)) return animationsObj;
-  
+
   if (typeof animationsObj === 'object' && animationsObj !== null) {
     return Object.keys(animationsObj).map(key => ({
       name: key,
       ...animationsObj[key]
     })).filter(anim => anim && anim.name);
   }
-  
+
   return [];
 }
 
 // **NEW: Collect animations safely**
 function collectAnimations(spineDataNormalized, validation) {
   const { type, animations } = spineDataNormalized;
-  
+
   let animationCount = 0;
-  
+
   switch (type) {
     case 'standard':
     case 'legacy':
@@ -258,7 +293,7 @@ function collectAnimations(spineDataNormalized, validation) {
         });
       }
       break;
-      
+
     case 'object-animations':
       if (Array.isArray(animations)) {
         animations.forEach(anim => {
@@ -269,7 +304,7 @@ function collectAnimations(spineDataNormalized, validation) {
         });
       }
       break;
-      
+
     case 'complex':
       // Try multiple possible locations
       const possibleAnimationLocations = [
@@ -278,7 +313,7 @@ function collectAnimations(spineDataNormalized, validation) {
         spineDataNormalized.data?.animations,
         spineDataNormalized.skeleton?.animations
       ];
-      
+
       possibleAnimationLocations.forEach(location => {
         if (Array.isArray(location)) {
           location.forEach(anim => {
@@ -304,12 +339,12 @@ function collectAnimations(spineDataNormalized, validation) {
         }
       });
       break;
-      
+
     default:
       showTerminal(`Warning: Unknown Spine JSON format, trying fallback animation extraction`);
       animationCount += extractAnimationsFallback(spineDataNormalized, validation);
   }
-  
+
   showTerminal(`Found ${animationCount} animations`);
 }
 
@@ -343,151 +378,265 @@ function extractAnimationsFallback(data, validation) {
       });
     }
   }
-  
+
   findAnimations(data);
   return count;
 }
 
 // **NEW: Collect skins and attachments safely**
-function collectSkinsAndAttachments(spineDataNormalized, allRegions, validation) {
-  // Robust handling for both object-mapped skins (Spine JSON) and array-style skins
-  const skinsRoot = spineDataNormalized.skins;
-  if (!skinsRoot) {
-    // fallback to default attachments check
-    checkDefaultAttachments(spineDataNormalized, allRegions, validation);
-    showTerminal('No skins found in JSON, checked default slot attachments');
-    return;
-  }
+function extractSpineAttachmentRequirements(spineData) {
+  const attachmentRequirements = new Map(); // Map<attachmentName, Set<context>>
+  const errors = [];
+  const warnings = [];
 
-  function ensureSkinEntry(name) {
-    if (!validation.skins[name]) {
-      validation.skins[name] = { attachments: {}, missing: [], total: 0 };
+  // Helper to add attachment requirement
+  function addAttachmentRequirement(attachmentName, context) {
+    if (!attachmentName || attachmentName === 'null' || attachmentName === null) return;
+    if (typeof attachmentName !== 'string') attachmentName = String(attachmentName);
+    if (attachmentName.trim() === '') return;
+
+    if (!attachmentRequirements.has(attachmentName)) {
+      attachmentRequirements.set(attachmentName, new Set());
     }
+    attachmentRequirements.get(attachmentName).add(context);
   }
 
-  function addMissing(skinName, slotName, attachmentName) {
-    const missingEntry = { skin: skinName, slot: slotName || 'unknown', attachment: attachmentName };
-    const exists = validation.missingAttachments.some(m =>
-      m.skin === missingEntry.skin && m.slot === missingEntry.slot && m.attachment === missingEntry.attachment
-    );
-    if (!exists) {
-      validation.missingAttachments.push(missingEntry);
-      validation.skins[skinName].missing.push(attachmentName);
-    }
+  // Helper to check if attachment is a special type that doesn't need texture
+  function isNonTextureAttachment(attachmentData) {
+    if (!attachmentData || typeof attachmentData !== 'object') return false;
+    const type = (attachmentData.type || '').toLowerCase();
+    return type === 'clipping' || type === 'boundingbox' || type === 'path' || type === 'point' || type === 'vertex';
   }
 
-  function markFound(skinName, attachmentName) {
-    validation.skins[skinName].attachments[attachmentName] = true;
+  // collect slot names for filtering (we will ignore requirements that are simply slot names)
+  const slotNames = new Set();
+  if (spineData.slots && Array.isArray(spineData.slots)) {
+    spineData.slots.forEach(s => {
+      if (s && s.name) slotNames.add(String(s.name).toLowerCase());
+    });
+  } else if (spineData.slots && typeof spineData.slots === 'object') {
+    Object.values(spineData.slots).forEach(s => {
+      if (s && s.name) slotNames.add(String(s.name).toLowerCase());
+    });
   }
 
-  // Helper: determine if an attachment should be validated against atlas regions
-  function isTextureAttachment(att) {
-    if (typeof att === 'string') return true; // string name -> likely a region
-    if (!att || typeof att !== 'object') return true;
-    const type = (att.type || '').toLowerCase();
-    // Only these attachment types reference textures/regions
-    return type === '' || type === 'region' || type === 'mesh' || type === 'skinnedmesh' || type === 'linkedmesh';
-  }
+  // 1. Extract defined attachments from skins
+  const definedAttachments = new Set();
+  const skinAttachments = new Map(); // Map<skinName, Map<slotName, Map<attKey, attObj>>>
+  const nonTextureNames = new Set(); // attachments that are clipping/etc -> ignore
 
-  // Helper: get the actual image/region name for an attachment object
-  function getAttachmentImageName(attObj, fallbackKey) {
-    if (typeof attObj === 'string') return attObj;
-    if (!attObj || typeof attObj !== 'object') return fallbackKey || null;
-    // common keys that identify which atlas region to use
-    return attObj.path || attObj.name || attObj.image || fallbackKey || null;
-  }
+  if (spineData.skins) {
+    const skins = spineData.skins;
+    const skinEntries = Array.isArray(skins)
+      ? skins.map((s, i) => [s.name || `skin_${i}`, s])
+      : Object.entries(skins);
 
-  function processSlotAttachments(skinName, slotName, slotAttachments) {
-    if (slotAttachments == null) return;
+    skinEntries.forEach(([skinName, skinData]) => {
+      if (!skinData || typeof skinData !== 'object') return;
+      if (!skinAttachments.has(skinName)) skinAttachments.set(skinName, new Map());
 
-    // array of attachments (legacy or alternative formats)
-    if (Array.isArray(slotAttachments)) {
-      slotAttachments.forEach(att => {
-        let attName = null;
-        if (typeof att === 'string') attName = att;
-        else if (att && typeof att === 'object') attName = getAttachmentImageName(att, null);
-        if (!attName) return;
-        // skip non-texture attachments (e.g. clipping, boundingbox, path)
-        if (att && typeof att === 'object' && !isTextureAttachment(att)) return;
-        validation.skins[skinName].total++;
-        validation.totalAttachments++;
-        const region = attName.toLowerCase();
-        if (!allRegions.has(region)) addMissing(skinName, slotName, attName);
-        else markFound(skinName, attName);
+      Object.entries(skinData).forEach(([slotName, slotData]) => {
+        if (!slotData || typeof slotData !== 'object') return;
+        if (!skinAttachments.get(skinName).has(slotName)) skinAttachments.get(skinName).set(slotName, new Map());
+
+        Object.entries(slotData).forEach(([attachmentKey, attachmentData]) => {
+          // mark non-texture attachments so we can filter them later
+          if (isNonTextureAttachment(attachmentData)) {
+            nonTextureNames.add((attachmentData.name || attachmentData.path || attachmentKey).toLowerCase());
+            nonTextureNames.add(String(attachmentKey).toLowerCase());
+            return; // skip adding as a texture requirement
+          }
+
+          let atlasName = attachmentKey;
+          if (attachmentData && typeof attachmentData === 'object') {
+            atlasName = attachmentData.name || attachmentData.path || attachmentKey;
+          }
+
+          definedAttachments.add(attachmentKey);
+          if (atlasName && atlasName !== attachmentKey) definedAttachments.add(atlasName);
+
+          skinAttachments.get(skinName).get(slotName).set(attachmentKey, attachmentData || null);
+
+          // Add requirement (atlas lookup uses atlasName)
+          addAttachmentRequirement(atlasName, `skin:${skinName}.${slotName}`);
+        });
       });
+    });
+  }
+
+  // 2. Extract slot default attachments
+  if (spineData.slots && Array.isArray(spineData.slots)) {
+    spineData.slots.forEach(slot => {
+      if (slot && slot.attachment) {
+        const attachmentName = typeof slot.attachment === 'string' ? slot.attachment : (slot.attachment.name || slot.attachment.path || null);
+        if (attachmentName) addAttachmentRequirement(attachmentName, `slot:${slot.name || 'unknown'}_default`);
+      }
+    });
+  }
+
+  // 3. Extract animation attachment references (recursively handle object/array shapes)
+  if (spineData.animations) {
+    const animations = spineData.animations;
+    const animEntries = Array.isArray(animations)
+      ? animations.map((a, i) => [a.name || `anim_${i}`, a])
+      : Object.entries(animations);
+
+    animEntries.forEach(([animName, animData]) => {
+      if (!animData || typeof animData !== 'object') return;
+
+      if (animData.slots && typeof animData.slots === 'object') {
+        Object.entries(animData.slots).forEach(([slotName, slotData]) => {
+          if (!slotData) return;
+          if (Array.isArray(slotData.attachment)) {
+            slotData.attachment.forEach(keyframe => {
+              // explicit detach -> skip
+              if (!keyframe) return;
+              if (keyframe.name === null) return;
+              const attName = (typeof keyframe === 'string') ? keyframe : keyframe.name;
+              if (attName) addAttachmentRequirement(attName, `animation:${animName}.${slotName}`);
+            });
+          }
+        });
+      }
+
+      // deform attachments etc.
+      if (animData.deform && typeof animData.deform === 'object') {
+        Object.entries(animData.deform).forEach(([skinName, skinDeforms]) => {
+          if (!skinDeforms) return;
+          Object.entries(skinDeforms).forEach(([slotName, slotDeforms]) => {
+            if (!slotDeforms) return;
+            Object.keys(slotDeforms).forEach(attachmentName => {
+              addAttachmentRequirement(attachmentName, `deform:${animName}.${skinName}.${slotName}`);
+            });
+          });
+        });
+      }
+    });
+  }
+
+  // 4. Deep-scan skins area for declared name/path/image (covers nested cases)
+  (function deepScanForDeclared(obj) {
+    if (!obj || typeof obj !== 'object') return;
+    if (Array.isArray(obj)) {
+      obj.forEach(it => deepScanForDeclared(it));
       return;
     }
-
-    // object mapping: attachmentName -> attachmentData (this is the most common Spine JSON format)
-    if (typeof slotAttachments === 'object') {
-      const keys = Object.keys(slotAttachments);
-      keys.forEach(k => {
-        const attObj = slotAttachments[k];
-        // Some attachment objects are metadata (clipping etc.). Determine image name and type.
-        const attName = k || getAttachmentImageName(attObj, k) || null;
-        if (!attName) return;
-        // If attachment object exists and is non-texture, skip it (e.g. clipping mask)
-        if (attObj && !isTextureAttachment(attObj)) {
-          // skip validation for non-texture attachment types like clipping
-          return;
+    Object.entries(obj).forEach(([k, v]) => {
+      if (v && typeof v === 'object' && (v.path || v.name || v.image)) {
+        const declared = v.path || v.name || v.image;
+        if (declared) addAttachmentRequirement(declared, `declared:${k}`);
+        if (isNonTextureAttachment(v)) {
+          nonTextureNames.add(String(declared).toLowerCase());
+          nonTextureNames.add(String(k).toLowerCase());
         }
-        validation.skins[skinName].total++;
-        validation.totalAttachments++;
-        const region = attName.toLowerCase();
-        if (!allRegions.has(region)) addMissing(skinName, slotName, attName);
-        else markFound(skinName, attName);
-      });
-      return;
-    }
+      }
+      deepScanForDeclared(v);
+    });
+  })(spineData.skins || {});
 
-    // string (single attachment name)
-    if (typeof slotAttachments === 'string') {
-      const attName = slotAttachments;
-      validation.skins[skinName].total++;
-      validation.totalAttachments++;
-      if (!allRegions.has(attName.toLowerCase())) addMissing(skinName, slotName, attName);
-      else markFound(skinName, attName);
-    }
-  }
+  // 5. Build final atlasRequirements list but filter out noise:
+  //   - internal slot names (these are not atlas texture names)
+  //   - non-texture/clipping attachment names
+  //   - entries that look like "_empty"
+  const finalAtlasRequirements = Array.from(attachmentRequirements.keys())
+    .map(n => String(n))
+    .filter(n => {
+      if (!n) return false;
+      const nl = n.toLowerCase().trim();
+      if (nl === '' || nl === 'null') return false;
+      if (nl.startsWith('_empty') || nl === '_empty') return false;
+      if (slotNames.has(nl)) return false; // ignore slot-name-like entries
+      if (nonTextureNames.has(nl)) return false; // ignore clipping/boundingbox/etc
+      return true;
+    })
+    .sort();
 
-  // If skins is an array (rare) each skin might have its own shape
-  if (Array.isArray(skinsRoot)) {
-    Object.values(skinsRoot).forEach(skin => {
-      const skinName = skin && (skin.name || skin.skin) ? (skin.name || skin.skin) : 'default';
-      ensureSkinEntry(skinName);
-      // root of attachments may be the skin object itself or skin.attachments / skin.slots
-      const root = skin.attachments || skin.slots || skin;
-      if (!root || typeof root !== 'object') return;
-      Object.entries(root).forEach(([slotName, slotAttachments]) => {
-        processSlotAttachments(skinName, slotName, slotAttachments);
+  // 6. Prepare errors for animation-referenced attachments that are not defined anywhere in JSON skins
+  // (only consider real requirements, not filtered ones)
+  finalAtlasRequirements.forEach(name => {
+    const nameLower = name.toLowerCase();
+    // if referenced in animations but not present in any skin/slot declaration AND not a known non-texture
+    let defined = false;
+    // check declared in skins
+    skinAttachments.forEach((slotsMap, skinName) => {
+      slotsMap.forEach((attsMap, slotName) => {
+        if (attsMap.has(name) || attsMap.has(nameLower)) defined = true;
+        // also check declared name inside attObj
+        attsMap.forEach((attObj, attKey) => {
+          if (attObj && typeof attObj === 'object') {
+            const declared = (attObj.name || attObj.path || attObj.image);
+            if (declared && String(declared).toLowerCase() === nameLower) defined = true;
+          }
+        });
       });
     });
-  } else if (typeof skinsRoot === 'object') {
-    // Common Spine JSON: skins is an object mapping skinName -> { slotName -> { attachmentName -> data } }
-    Object.entries(skinsRoot).forEach(([skinName, skinContent]) => {
-      const name = skinName || 'default';
-      ensureSkinEntry(name);
-      if (!skinContent || typeof skinContent !== 'object') return;
-      // skinContent usually maps slotName -> { attachmentName -> data }
-      const root = skinContent.attachments || skinContent.slots || skinContent;
-      Object.entries(root).forEach(([slotName, slotAttachments]) => {
-        processSlotAttachments(name, slotName, slotAttachments);
+
+    // check slot defaults
+    if (!defined && spineData.slots && Array.isArray(spineData.slots)) {
+      spineData.slots.forEach(s => {
+        if (!s) return;
+        const cand = typeof s.attachment === 'string' ? s.attachment : (s.attachment && (s.attachment.name || s.attachment.path) ? (s.attachment.name || s.attachment.path) : null);
+        if (cand && String(cand).toLowerCase() === nameLower) defined = true;
       });
-    });
-  }
+    }
 
-  // If no skins discovered (defensive), check default attachments from slots
-  if (Object.keys(validation.skins).length === 0) {
-    checkDefaultAttachments(spineDataNormalized, allRegions, validation);
-  }
+    // if referenced from animation and not defined anywhere, add error
+    const contexts = attachmentRequirements.get(name) || new Set();
+    const hasAnimContext = Array.from(contexts).some(c => String(c).startsWith('animation:'));
+    if (hasAnimContext && !defined) {
+      errors.push({
+        type: 'undefined_attachment_reference',
+        attachment: name,
+        contexts: Array.from(contexts),
+        message: `Attachment "${name}" referenced in animations but not defined in any skin or slot`
+      });
+    }
+  });
 
-  showTerminal(`Attachment validation complete: ${validation.totalAttachments} total, ${validation.missingAttachments.length} missing`);
+  const report = {
+    atlasRequirements: finalAtlasRequirements,
+    definedAttachments: Array.from(definedAttachments).sort(),
+    requirementsMap: Object.fromEntries(
+      Array.from(attachmentRequirements.entries()).map(([name, contexts]) => [name, Array.from(contexts)])
+    ),
+    skinStructure: Object.fromEntries(
+      Array.from(skinAttachments.entries()).map(([skinName, slots]) =>
+        [skinName, Object.fromEntries(Array.from(slots.entries()).map(([slotName, attsMap]) => [slotName, Array.from(attsMap.keys())]))]
+      )
+    ),
+    errors,
+    warnings,
+    stats: {
+      totalAttachments: attachmentRequirements.size,
+      totalSkins: skinAttachments.size,
+      totalErrors: errors.length,
+      totalWarnings: warnings.length
+    }
+  };
+
+  return report;
 }
-// ...existing code...
+
+// Usage example with validation
+function validateSpineAttachments(spineData, atlasRegions = []) {
+  const report = extractSpineAttachmentRequirements(spineData);
+  const atlasSet = new Set(atlasRegions.map(r => r.toLowerCase()));
+
+  // Check which required attachments are missing from atlas
+  const missingFromAtlas = report.atlasRequirements.filter(att =>
+    !atlasSet.has(att.toLowerCase())
+  );
+
+  return {
+    ...report,
+    missingFromAtlas: missingFromAtlas,
+    validationPassed: report.errors.length === 0 && missingFromAtlas.length === 0
+  };
+}
 
 function displayValidationResults(validation) {
   validationStatus.textContent = '';
-  
+
   // Update missing attachments display
   if (validation.missingAttachments.length > 0) {
     missingAttachments.innerHTML = `⚠️ ${validation.missingAttachments.length} missing attachments`;
@@ -504,7 +653,7 @@ function displayValidationResults(validation) {
   // Update animation stats
   const skinCount = Object.keys(validation.skins).length;
   animationStats.innerHTML = `Animations: ${validation.animations.size} | Skins: ${skinCount}`;
-  
+
   // Update load button
   if (validation.missingAttachments.length === 0) {
     loadButton.textContent = 'Load Animation';
@@ -519,24 +668,24 @@ function displayValidationResults(validation) {
 }
 
 function showMissingDetails(missing) {
-  const details = missing.map(m => 
+  const details = missing.map(m =>
     `${m.skin}.${m.slot}: ${m.attachment}`
   ).join('\n');
-  
+
   const modal = document.createElement('div');
   modal.style.cssText = `
     position: fixed; top: 0; left: 0; width: 100%; height: 100%;
     background: rgba(0,0,0,0.8); z-index: 1000; display: flex;
     align-items: center; justify-content: center;
   `;
-  
+
   const content = document.createElement('div');
   content.style.cssText = `
     background: #333; color: #ff6666; padding: 20px; border-radius: 8px;
     max-width: 500px; max-height: 400px; overflow: auto;
     font-family: monospace; font-size: 12px;
   `;
-  
+
   content.innerHTML = `
     <h3>Missing Attachments (${missing.length})</h3>
     <pre>${details}</pre>
@@ -545,7 +694,7 @@ function showMissingDetails(missing) {
       Close
     </button>
   `;
-  
+
   modal.appendChild(content);
   document.body.appendChild(modal);
 }
@@ -625,7 +774,7 @@ function updateAnimationSelectorForSkin(skinName) {
 
   // Clear and repopulate animations
   animSelector.innerHTML = '<option value="">Select Animation</option>';
-  
+
   let animations = [];
   if (skeletonData.animations && Array.isArray(skeletonData.animations)) {
     animations = skeletonData.animations;
@@ -639,7 +788,7 @@ function updateAnimationSelectorForSkin(skinName) {
       const opt = document.createElement('option');
       opt.value = animName;
       opt.textContent = animName;
-      
+
       // Apply visual feedback based on validation
       if (validationResults && skinName && validationResults.skins[skinName]) {
         const hasMissing = validationResults.skins[skinName].missing.length > 0;
@@ -648,7 +797,7 @@ function updateAnimationSelectorForSkin(skinName) {
           opt.title = `${skinName} has ${validationResults.skins[skinName].missing.length} missing attachments`;
         }
       }
-      
+
       animSelector.appendChild(opt);
     }
   });
@@ -661,14 +810,14 @@ function updateSelectorVisuals() {
   const currentSkin = skinSelector.value;
   const skinOptions = Array.from(skinSelector.options);
   const animOptions = Array.from(animSelector.options);
-  
+
   skinOptions.forEach(opt => {
     if (opt.value === currentSkin) {
       opt.selected = true;
     }
     // Mark skins with missing attachments
-    if (validationResults && validationResults.skins[opt.value] && 
-        validationResults.skins[opt.value].missing.length > 0) {
+    if (validationResults && validationResults.skins[opt.value] &&
+      validationResults.skins[opt.value].missing.length > 0) {
       opt.className = 'has-missing';
     } else {
       opt.className = '';
@@ -688,11 +837,11 @@ function canAnimationPlayWithSkin(animName, skinName) {
   if (!validationResults || !validationResults.skins[skinName]) {
     return true; // Assume it's fine if no validation data
   }
-  
+
   const skinData = validationResults.skins[skinName];
   // If skin has some valid attachments, assume animations can play
   return (skinData.attachments && Object.keys(skinData.attachments).length > 0) ||
-         (skinData.total === 0); // If no attachments defined, assume it's okay
+    (skinData.total === 0); // If no attachments defined, assume it's okay
 }
 
 // **NEW: Load button handler**
@@ -701,14 +850,14 @@ loadButton.addEventListener('click', async () => {
     loadButton.disabled = true;
     loadButton.textContent = 'Loading...';
     loadButton.className = 'loading';
-    
+
     clearTerminal();
     showTerminal('Starting validation and loading process...');
-    
+
     // First validate
     const validation = await validateSpineAssets();
     displayValidationResults(validation);
-    
+
     if (validation.missingAttachments.length > 0) {
       showTerminal(`Found ${validation.missingAttachments.length} missing attachments.`);
       const proceed = confirm(
@@ -720,22 +869,22 @@ loadButton.addEventListener('click', async () => {
         return;
       }
     }
-    
+
     showTerminal('Starting asset loading...');
     // Then load
     await loadSpineAssets();
-    
+
   } catch (error) {
     showError('Process failed: ' + error.message);
     showTerminal('Process error: ' + error.message);
     console.error('Load error:', error);
   } finally {
     loadButton.disabled = false;
-    loadButton.textContent = validationResults && validationResults.missingAttachments.length > 0 
-      ? `Reload (${validationResults.missingAttachments.length} warnings)` 
+    loadButton.textContent = validationResults && validationResults.missingAttachments.length > 0
+      ? `Reload (${validationResults.missingAttachments.length} warnings)`
       : 'Reload';
-    loadButton.className = validationResults && validationResults.missingAttachments.length > 0 
-      ? 'warning' 
+    loadButton.className = validationResults && validationResults.missingAttachments.length > 0
+      ? 'warning'
       : 'success';
   }
 });
@@ -800,7 +949,7 @@ async function loadSpineAssets() {
     let allRegions = [];
     let allPages = [];
     let lastAtlas = null;
-    
+
     showTerminal(`Processing ${atlasContents.length} atlas files...`);
     for (let atlasContent of atlasContents) {
       try {
@@ -830,7 +979,7 @@ async function loadSpineAssets() {
 
     // Enhanced error handling for missing attachments
     const originalReadAttachment = spineJsonParser.readAttachment.bind(spineJsonParser);
-    spineJsonParser.readAttachment = function(map, skin, slotIndex, name) {
+    spineJsonParser.readAttachment = function (map, skin, slotIndex, name) {
       try {
         return originalReadAttachment(map, skin, slotIndex, name);
       } catch (err) {
@@ -854,19 +1003,19 @@ async function loadSpineAssets() {
     }
 
     spineObj = new PIXI.spine.Spine(skeletonData);
-    
+
     // Auto-center and scale
     spineObj.x = app.renderer.width / 2;
     spineObj.y = app.renderer.height / 2;
-    
+
     // Wait one frame for bounds to be calculated
     await new Promise(resolve => requestAnimationFrame(resolve));
-    
+
     const bounds = spineObj.getBounds();
     const scaleX = (app.renderer.width * 0.8) / bounds.width;
     const scaleY = (app.renderer.height * 0.8) / bounds.height;
     spineObj.scale.set(Math.min(scaleX, scaleY, 0.8));
-    
+
     showTerminal(`Bounds: ${Math.round(bounds.width)}x${Math.round(bounds.height)}, Scale: ${spineObj.scale.x.toFixed(2)}`);
 
     app.stage.addChild(spineObj);
@@ -880,7 +1029,7 @@ async function loadSpineAssets() {
     if (defaultSkinName) {
       setSkin(defaultSkinName);
     }
-    
+
     const animations = getAvailableAnimations(skeletonData);
     if (animations.length > 0) {
       playAnimation(animations[0]);
@@ -932,12 +1081,12 @@ function setSkin(skinName) {
         spineObj.skeleton.setSkin(skin);
         spineObj.skeleton.setSlotsToSetupPose();
         currentSkin = skinName;
-        
+
         // Update animation selector for this skin
         updateAnimationSelectorForSkin(skinName);
-        
+
         showTerminal(`🎨 Applied skin: ${skinName}`);
-        
+
         // Check for missing attachments in current skin
         if (validationResults && validationResults.skins[skinName]) {
           const missingCount = validationResults.skins[skinName].missing.length;
@@ -1025,7 +1174,7 @@ window.addEventListener('resize', () => {
   if (spineObj) {
     spineObj.x = app.renderer.width / 2;
     spineObj.y = app.renderer.height / 2;
-    
+
     // Wait for next frame to get accurate bounds
     requestAnimationFrame(() => {
       if (spineObj) {
