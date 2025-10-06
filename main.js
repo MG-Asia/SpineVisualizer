@@ -385,237 +385,57 @@ function extractAnimationsFallback(data, validation) {
 
 // **NEW: Collect skins and attachments safely**
 function extractSpineAttachmentRequirements(spineData) {
-  const attachmentRequirements = new Map(); // Map<attachmentName, Set<context>>
-  const errors = [];
-  const warnings = [];
-
-  // Helper to add attachment requirement
-  function addAttachmentRequirement(attachmentName, context) {
-    if (!attachmentName || attachmentName === 'null' || attachmentName === null) return;
-    if (typeof attachmentName !== 'string') attachmentName = String(attachmentName);
-    if (attachmentName.trim() === '') return;
-
-    if (!attachmentRequirements.has(attachmentName)) {
-      attachmentRequirements.set(attachmentName, new Set());
+  const textureNames = new Set();
+  
+  // Helper to resolve the atlas region name for an attachment
+  const resolveRegionName = (attachmentName, attachment) => {
+    if (!attachment || typeof attachment !== 'object') return null;
+    // Prefer explicit region reference order
+    const candidates = [attachment.name, attachment.path, attachment.region, attachment.parent];
+    for (const c of candidates) {
+      if (typeof c === 'string' && c.trim()) return c;
     }
-    attachmentRequirements.get(attachmentName).add(context);
-  }
-
-  // Helper to check if attachment is a special type that doesn't need texture
-  function isNonTextureAttachment(attachmentData) {
-    if (!attachmentData || typeof attachmentData !== 'object') return false;
-    const type = (attachmentData.type || '').toLowerCase();
-    return type === 'clipping' || type === 'boundingbox' || type === 'path' || type === 'point' || type === 'vertex';
-  }
-
-  // collect slot names for filtering (we will ignore requirements that are simply slot names)
-  const slotNames = new Set();
-  if (spineData.slots && Array.isArray(spineData.slots)) {
-    spineData.slots.forEach(s => {
-      if (s && s.name) slotNames.add(String(s.name).toLowerCase());
-    });
-  } else if (spineData.slots && typeof spineData.slots === 'object') {
-    Object.values(spineData.slots).forEach(s => {
-      if (s && s.name) slotNames.add(String(s.name).toLowerCase());
-    });
-  }
-
-  // 1. Extract defined attachments from skins
-  const definedAttachments = new Set();
-  const skinAttachments = new Map(); // Map<skinName, Map<slotName, Map<attKey, attObj>>>
-  const nonTextureNames = new Set(); // attachments that are clipping/etc -> ignore
-
-  if (spineData.skins) {
-    const skins = spineData.skins;
-    const skinEntries = Array.isArray(skins)
-      ? skins.map((s, i) => [s.name || `skin_${i}`, s])
-      : Object.entries(skins);
-
-    skinEntries.forEach(([skinName, skinData]) => {
-      if (!skinData || typeof skinData !== 'object') return;
-      if (!skinAttachments.has(skinName)) skinAttachments.set(skinName, new Map());
-
-      Object.entries(skinData).forEach(([slotName, slotData]) => {
-        if (!slotData || typeof slotData !== 'object') return;
-        if (!skinAttachments.get(skinName).has(slotName)) skinAttachments.get(skinName).set(slotName, new Map());
-
-        Object.entries(slotData).forEach(([attachmentKey, attachmentData]) => {
-          // mark non-texture attachments so we can filter them later
-          if (isNonTextureAttachment(attachmentData)) {
-            nonTextureNames.add((attachmentData.name || attachmentData.path || attachmentKey).toLowerCase());
-            nonTextureNames.add(String(attachmentKey).toLowerCase());
-            return; // skip adding as a texture requirement
-          }
-
-          let atlasName = attachmentKey;
-          if (attachmentData && typeof attachmentData === 'object') {
-            atlasName = attachmentData.name || attachmentData.path || attachmentKey;
-          }
-
-          definedAttachments.add(attachmentKey);
-          if (atlasName && atlasName !== attachmentKey) definedAttachments.add(atlasName);
-
-          skinAttachments.get(skinName).get(slotName).set(attachmentKey, attachmentData || null);
-
-          // Add requirement (atlas lookup uses atlasName)
-          addAttachmentRequirement(atlasName, `skin:${skinName}.${slotName}`);
-        });
-      });
-    });
-  }
-
-  // 2. Extract slot default attachments
-  if (spineData.slots && Array.isArray(spineData.slots)) {
-    spineData.slots.forEach(slot => {
-      if (slot && slot.attachment) {
-        const attachmentName = typeof slot.attachment === 'string' ? slot.attachment : (slot.attachment.name || slot.attachment.path || null);
-        if (attachmentName) addAttachmentRequirement(attachmentName, `slot:${slot.name || 'unknown'}_default`);
-      }
-    });
-  }
-
-  // 3. Extract animation attachment references (recursively handle object/array shapes)
-  if (spineData.animations) {
-    const animations = spineData.animations;
-    const animEntries = Array.isArray(animations)
-      ? animations.map((a, i) => [a.name || `anim_${i}`, a])
-      : Object.entries(animations);
-
-    animEntries.forEach(([animName, animData]) => {
-      if (!animData || typeof animData !== 'object') return;
-
-      if (animData.slots && typeof animData.slots === 'object') {
-        Object.entries(animData.slots).forEach(([slotName, slotData]) => {
-          if (!slotData) return;
-          if (Array.isArray(slotData.attachment)) {
-            slotData.attachment.forEach(keyframe => {
-              // explicit detach -> skip
-              if (!keyframe) return;
-              if (keyframe.name === null) return;
-              const attName = (typeof keyframe === 'string') ? keyframe : keyframe.name;
-              if (attName) addAttachmentRequirement(attName, `animation:${animName}.${slotName}`);
-            });
-          }
-        });
-      }
-
-      // deform attachments etc.
-      if (animData.deform && typeof animData.deform === 'object') {
-        Object.entries(animData.deform).forEach(([skinName, skinDeforms]) => {
-          if (!skinDeforms) return;
-          Object.entries(skinDeforms).forEach(([slotName, slotDeforms]) => {
-            if (!slotDeforms) return;
-            Object.keys(slotDeforms).forEach(attachmentName => {
-              addAttachmentRequirement(attachmentName, `deform:${animName}.${skinName}.${slotName}`);
-            });
-          });
-        });
-      }
-    });
-  }
-
-  // 4. Deep-scan skins area for declared name/path/image (covers nested cases)
-  (function deepScanForDeclared(obj) {
-    if (!obj || typeof obj !== 'object') return;
-    if (Array.isArray(obj)) {
-      obj.forEach(it => deepScanForDeclared(it));
-      return;
+    // If none of the typical fields exist, do NOT fallback to the key unless it's a region-like attachment
+    // For Spine, region-bearing attachments are typically: region, mesh, weightedmesh, linkedmesh
+    const type = attachment.type;
+    if (!type || ['region', 'mesh', 'weightedmesh', 'linkedmesh'].includes(type)) {
+      // Some exports omit type, so allow missing type as potentially region-bearing
+      return attachmentName;
     }
-    Object.entries(obj).forEach(([k, v]) => {
-      if (v && typeof v === 'object' && (v.path || v.name || v.image)) {
-        const declared = v.path || v.name || v.image;
-        if (declared) addAttachmentRequirement(declared, `declared:${k}`);
-        if (isNonTextureAttachment(v)) {
-          nonTextureNames.add(String(declared).toLowerCase());
-          nonTextureNames.add(String(k).toLowerCase());
-        }
-      }
-      deepScanForDeclared(v);
-    });
-  })(spineData.skins || {});
-
-  // 5. Build final atlasRequirements list but filter out noise:
-  //   - internal slot names (these are not atlas texture names)
-  //   - non-texture/clipping attachment names
-  //   - entries that look like "_empty"
-  const finalAtlasRequirements = Array.from(attachmentRequirements.keys())
-    .map(n => String(n))
-    .filter(n => {
-      if (!n) return false;
-      const nl = n.toLowerCase().trim();
-      if (nl === '' || nl === 'null') return false;
-      if (nl.startsWith('_empty') || nl === '_empty') return false;
-      if (slotNames.has(nl)) return false; // ignore slot-name-like entries
-      if (nonTextureNames.has(nl)) return false; // ignore clipping/boundingbox/etc
-      return true;
-    })
-    .sort();
-
-  // 6. Prepare errors for animation-referenced attachments that are not defined anywhere in JSON skins
-  // (only consider real requirements, not filtered ones)
-  finalAtlasRequirements.forEach(name => {
-    const nameLower = name.toLowerCase();
-    // if referenced in animations but not present in any skin/slot declaration AND not a known non-texture
-    let defined = false;
-    // check declared in skins
-    skinAttachments.forEach((slotsMap, skinName) => {
-      slotsMap.forEach((attsMap, slotName) => {
-        if (attsMap.has(name) || attsMap.has(nameLower)) defined = true;
-        // also check declared name inside attObj
-        attsMap.forEach((attObj, attKey) => {
-          if (attObj && typeof attObj === 'object') {
-            const declared = (attObj.name || attObj.path || attObj.image);
-            if (declared && String(declared).toLowerCase() === nameLower) defined = true;
-          }
-        });
-      });
-    });
-
-    // check slot defaults
-    if (!defined && spineData.slots && Array.isArray(spineData.slots)) {
-      spineData.slots.forEach(s => {
-        if (!s) return;
-        const cand = typeof s.attachment === 'string' ? s.attachment : (s.attachment && (s.attachment.name || s.attachment.path) ? (s.attachment.name || s.attachment.path) : null);
-        if (cand && String(cand).toLowerCase() === nameLower) defined = true;
-      });
-    }
-
-    // if referenced from animation and not defined anywhere, add error
-    const contexts = attachmentRequirements.get(name) || new Set();
-    const hasAnimContext = Array.from(contexts).some(c => String(c).startsWith('animation:'));
-    if (hasAnimContext && !defined) {
-      errors.push({
-        type: 'undefined_attachment_reference',
-        attachment: name,
-        contexts: Array.from(contexts),
-        message: `Attachment "${name}" referenced in animations but not defined in any skin or slot`
-      });
-    }
-  });
-
-  const report = {
-    atlasRequirements: finalAtlasRequirements,
-    definedAttachments: Array.from(definedAttachments).sort(),
-    requirementsMap: Object.fromEntries(
-      Array.from(attachmentRequirements.entries()).map(([name, contexts]) => [name, Array.from(contexts)])
-    ),
-    skinStructure: Object.fromEntries(
-      Array.from(skinAttachments.entries()).map(([skinName, slots]) =>
-        [skinName, Object.fromEntries(Array.from(slots.entries()).map(([slotName, attsMap]) => [slotName, Array.from(attsMap.keys())]))]
-      )
-    ),
-    errors,
-    warnings,
-    stats: {
-      totalAttachments: attachmentRequirements.size,
-      totalSkins: skinAttachments.size,
-      totalErrors: errors.length,
-      totalWarnings: warnings.length
-    }
+    return null;
   };
 
-  return report;
+  if (spineData && spineData.skins) {
+    for (const skinName of Object.keys(spineData.skins)) {
+      const skin = spineData.skins[skinName];
+      for (const slotName of Object.keys(skin)) {
+        const attachments = skin[slotName];
+        for (const attachmentName of Object.keys(attachments)) {
+          const attachment = attachments[attachmentName];
+          const resolved = resolveRegionName(attachmentName, attachment);
+          if (resolved) textureNames.add(resolved);
+        }
+      }
+    }
+  }
+  
+  return {
+    atlasRequirements: Array.from(textureNames).sort(),
+    definedAttachments: Array.from(textureNames).sort(),
+    requirementsMap: {},
+    skinStructure: {},
+    errors: [],
+    warnings: [],
+    stats: {
+      totalAttachments: textureNames.size,
+      totalSkins: spineData.skins ? Object.keys(spineData.skins).length : 0,
+      totalErrors: 0,
+      totalWarnings: 0
+    }
+  };
 }
+
+
 
 // Usage example with validation
 function validateSpineAttachments(spineData, atlasRegions = []) {
