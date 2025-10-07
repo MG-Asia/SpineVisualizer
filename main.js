@@ -1,7 +1,21 @@
-const app = new PIXI.Application({ backgroundColor: 0x1e1e1e, resizeTo: window });
-document.body.appendChild(app.view);
+const canvasContainer = document.getElementById('canvasContainer');
+const app = new PIXI.Application({ 
+  backgroundColor: 0x1e1e1e, 
+  width: canvasContainer.clientWidth,
+  height: canvasContainer.clientHeight
+});
+canvasContainer.appendChild(app.view);
 
-const dropZone = document.getElementById('dropZone');
+// Handle canvas container resize
+const resizeObserver = new ResizeObserver(() => {
+  app.renderer.resize(canvasContainer.clientWidth, canvasContainer.clientHeight);
+  if (spineObj) {
+    spineObj.x = canvasContainer.clientWidth / 2;
+    spineObj.y = canvasContainer.clientHeight / 2;
+  }
+});
+resizeObserver.observe(canvasContainer);
+
 const jsonInput = document.getElementById('jsonInput');
 const atlasInput = document.getElementById('atlasInput');
 const pngInput = document.getElementById('pngInput');
@@ -12,6 +26,9 @@ const revalidateButton = document.getElementById('revalidateButton');
 const validationStatus = document.getElementById('validationStatus');
 const missingAttachments = document.getElementById('missingAttachments');
 const animationStats = document.getElementById('animationStats');
+const fileUploadModal = document.getElementById('fileUploadModal');
+const animationModal = document.getElementById('animationModal');
+const clearFilesButton = document.getElementById('clearFilesButton');
 
 let files = { json: null, atlases: [], images: [] };
 let spineObj = null;
@@ -23,19 +40,7 @@ let currentSkin = null;
 const warnBox = document.getElementById('warnBox');
 const terminalBox = document.getElementById('terminalBox');
 
-// Drag & drop
-dropZone.addEventListener("dragover", e => {
-  e.preventDefault();
-  dropZone.classList.add('dragover');
-});
-dropZone.addEventListener("dragleave", e => {
-  dropZone.classList.remove('dragover');
-});
-dropZone.addEventListener("drop", e => {
-  e.preventDefault();
-  dropZone.classList.remove('dragover');
-  handleFiles(e.dataTransfer.files);
-});
+
 
 // File selectors
 jsonInput.addEventListener("change", e => {
@@ -94,8 +99,9 @@ function showTerminal(msg) {
 }
 
 function clearTerminal() {
-  terminalBox.style.display = 'none';
   terminalBox.textContent = '';
+  // Keep terminal visible in new layout
+  terminalBox.style.display = 'block';
 }
 
 // **FIXED: Robust validation system with proper error handling**
@@ -385,237 +391,57 @@ function extractAnimationsFallback(data, validation) {
 
 // **NEW: Collect skins and attachments safely**
 function extractSpineAttachmentRequirements(spineData) {
-  const attachmentRequirements = new Map(); // Map<attachmentName, Set<context>>
-  const errors = [];
-  const warnings = [];
-
-  // Helper to add attachment requirement
-  function addAttachmentRequirement(attachmentName, context) {
-    if (!attachmentName || attachmentName === 'null' || attachmentName === null) return;
-    if (typeof attachmentName !== 'string') attachmentName = String(attachmentName);
-    if (attachmentName.trim() === '') return;
-
-    if (!attachmentRequirements.has(attachmentName)) {
-      attachmentRequirements.set(attachmentName, new Set());
+  const textureNames = new Set();
+  
+  // Helper to resolve the atlas region name for an attachment
+  const resolveRegionName = (attachmentName, attachment) => {
+    if (!attachment || typeof attachment !== 'object') return null;
+    // Prefer explicit region reference order
+    const candidates = [attachment.name, attachment.path, attachment.region, attachment.parent];
+    for (const c of candidates) {
+      if (typeof c === 'string' && c.trim()) return c;
     }
-    attachmentRequirements.get(attachmentName).add(context);
-  }
-
-  // Helper to check if attachment is a special type that doesn't need texture
-  function isNonTextureAttachment(attachmentData) {
-    if (!attachmentData || typeof attachmentData !== 'object') return false;
-    const type = (attachmentData.type || '').toLowerCase();
-    return type === 'clipping' || type === 'boundingbox' || type === 'path' || type === 'point' || type === 'vertex';
-  }
-
-  // collect slot names for filtering (we will ignore requirements that are simply slot names)
-  const slotNames = new Set();
-  if (spineData.slots && Array.isArray(spineData.slots)) {
-    spineData.slots.forEach(s => {
-      if (s && s.name) slotNames.add(String(s.name).toLowerCase());
-    });
-  } else if (spineData.slots && typeof spineData.slots === 'object') {
-    Object.values(spineData.slots).forEach(s => {
-      if (s && s.name) slotNames.add(String(s.name).toLowerCase());
-    });
-  }
-
-  // 1. Extract defined attachments from skins
-  const definedAttachments = new Set();
-  const skinAttachments = new Map(); // Map<skinName, Map<slotName, Map<attKey, attObj>>>
-  const nonTextureNames = new Set(); // attachments that are clipping/etc -> ignore
-
-  if (spineData.skins) {
-    const skins = spineData.skins;
-    const skinEntries = Array.isArray(skins)
-      ? skins.map((s, i) => [s.name || `skin_${i}`, s])
-      : Object.entries(skins);
-
-    skinEntries.forEach(([skinName, skinData]) => {
-      if (!skinData || typeof skinData !== 'object') return;
-      if (!skinAttachments.has(skinName)) skinAttachments.set(skinName, new Map());
-
-      Object.entries(skinData).forEach(([slotName, slotData]) => {
-        if (!slotData || typeof slotData !== 'object') return;
-        if (!skinAttachments.get(skinName).has(slotName)) skinAttachments.get(skinName).set(slotName, new Map());
-
-        Object.entries(slotData).forEach(([attachmentKey, attachmentData]) => {
-          // mark non-texture attachments so we can filter them later
-          if (isNonTextureAttachment(attachmentData)) {
-            nonTextureNames.add((attachmentData.name || attachmentData.path || attachmentKey).toLowerCase());
-            nonTextureNames.add(String(attachmentKey).toLowerCase());
-            return; // skip adding as a texture requirement
-          }
-
-          let atlasName = attachmentKey;
-          if (attachmentData && typeof attachmentData === 'object') {
-            atlasName = attachmentData.name || attachmentData.path || attachmentKey;
-          }
-
-          definedAttachments.add(attachmentKey);
-          if (atlasName && atlasName !== attachmentKey) definedAttachments.add(atlasName);
-
-          skinAttachments.get(skinName).get(slotName).set(attachmentKey, attachmentData || null);
-
-          // Add requirement (atlas lookup uses atlasName)
-          addAttachmentRequirement(atlasName, `skin:${skinName}.${slotName}`);
-        });
-      });
-    });
-  }
-
-  // 2. Extract slot default attachments
-  if (spineData.slots && Array.isArray(spineData.slots)) {
-    spineData.slots.forEach(slot => {
-      if (slot && slot.attachment) {
-        const attachmentName = typeof slot.attachment === 'string' ? slot.attachment : (slot.attachment.name || slot.attachment.path || null);
-        if (attachmentName) addAttachmentRequirement(attachmentName, `slot:${slot.name || 'unknown'}_default`);
-      }
-    });
-  }
-
-  // 3. Extract animation attachment references (recursively handle object/array shapes)
-  if (spineData.animations) {
-    const animations = spineData.animations;
-    const animEntries = Array.isArray(animations)
-      ? animations.map((a, i) => [a.name || `anim_${i}`, a])
-      : Object.entries(animations);
-
-    animEntries.forEach(([animName, animData]) => {
-      if (!animData || typeof animData !== 'object') return;
-
-      if (animData.slots && typeof animData.slots === 'object') {
-        Object.entries(animData.slots).forEach(([slotName, slotData]) => {
-          if (!slotData) return;
-          if (Array.isArray(slotData.attachment)) {
-            slotData.attachment.forEach(keyframe => {
-              // explicit detach -> skip
-              if (!keyframe) return;
-              if (keyframe.name === null) return;
-              const attName = (typeof keyframe === 'string') ? keyframe : keyframe.name;
-              if (attName) addAttachmentRequirement(attName, `animation:${animName}.${slotName}`);
-            });
-          }
-        });
-      }
-
-      // deform attachments etc.
-      if (animData.deform && typeof animData.deform === 'object') {
-        Object.entries(animData.deform).forEach(([skinName, skinDeforms]) => {
-          if (!skinDeforms) return;
-          Object.entries(skinDeforms).forEach(([slotName, slotDeforms]) => {
-            if (!slotDeforms) return;
-            Object.keys(slotDeforms).forEach(attachmentName => {
-              addAttachmentRequirement(attachmentName, `deform:${animName}.${skinName}.${slotName}`);
-            });
-          });
-        });
-      }
-    });
-  }
-
-  // 4. Deep-scan skins area for declared name/path/image (covers nested cases)
-  (function deepScanForDeclared(obj) {
-    if (!obj || typeof obj !== 'object') return;
-    if (Array.isArray(obj)) {
-      obj.forEach(it => deepScanForDeclared(it));
-      return;
+    // If none of the typical fields exist, do NOT fallback to the key unless it's a region-like attachment
+    // For Spine, region-bearing attachments are typically: region, mesh, weightedmesh, linkedmesh
+    const type = attachment.type;
+    if (!type || ['region', 'mesh', 'weightedmesh', 'linkedmesh'].includes(type)) {
+      // Some exports omit type, so allow missing type as potentially region-bearing
+      return attachmentName;
     }
-    Object.entries(obj).forEach(([k, v]) => {
-      if (v && typeof v === 'object' && (v.path || v.name || v.image)) {
-        const declared = v.path || v.name || v.image;
-        if (declared) addAttachmentRequirement(declared, `declared:${k}`);
-        if (isNonTextureAttachment(v)) {
-          nonTextureNames.add(String(declared).toLowerCase());
-          nonTextureNames.add(String(k).toLowerCase());
-        }
-      }
-      deepScanForDeclared(v);
-    });
-  })(spineData.skins || {});
-
-  // 5. Build final atlasRequirements list but filter out noise:
-  //   - internal slot names (these are not atlas texture names)
-  //   - non-texture/clipping attachment names
-  //   - entries that look like "_empty"
-  const finalAtlasRequirements = Array.from(attachmentRequirements.keys())
-    .map(n => String(n))
-    .filter(n => {
-      if (!n) return false;
-      const nl = n.toLowerCase().trim();
-      if (nl === '' || nl === 'null') return false;
-      if (nl.startsWith('_empty') || nl === '_empty') return false;
-      if (slotNames.has(nl)) return false; // ignore slot-name-like entries
-      if (nonTextureNames.has(nl)) return false; // ignore clipping/boundingbox/etc
-      return true;
-    })
-    .sort();
-
-  // 6. Prepare errors for animation-referenced attachments that are not defined anywhere in JSON skins
-  // (only consider real requirements, not filtered ones)
-  finalAtlasRequirements.forEach(name => {
-    const nameLower = name.toLowerCase();
-    // if referenced in animations but not present in any skin/slot declaration AND not a known non-texture
-    let defined = false;
-    // check declared in skins
-    skinAttachments.forEach((slotsMap, skinName) => {
-      slotsMap.forEach((attsMap, slotName) => {
-        if (attsMap.has(name) || attsMap.has(nameLower)) defined = true;
-        // also check declared name inside attObj
-        attsMap.forEach((attObj, attKey) => {
-          if (attObj && typeof attObj === 'object') {
-            const declared = (attObj.name || attObj.path || attObj.image);
-            if (declared && String(declared).toLowerCase() === nameLower) defined = true;
-          }
-        });
-      });
-    });
-
-    // check slot defaults
-    if (!defined && spineData.slots && Array.isArray(spineData.slots)) {
-      spineData.slots.forEach(s => {
-        if (!s) return;
-        const cand = typeof s.attachment === 'string' ? s.attachment : (s.attachment && (s.attachment.name || s.attachment.path) ? (s.attachment.name || s.attachment.path) : null);
-        if (cand && String(cand).toLowerCase() === nameLower) defined = true;
-      });
-    }
-
-    // if referenced from animation and not defined anywhere, add error
-    const contexts = attachmentRequirements.get(name) || new Set();
-    const hasAnimContext = Array.from(contexts).some(c => String(c).startsWith('animation:'));
-    if (hasAnimContext && !defined) {
-      errors.push({
-        type: 'undefined_attachment_reference',
-        attachment: name,
-        contexts: Array.from(contexts),
-        message: `Attachment "${name}" referenced in animations but not defined in any skin or slot`
-      });
-    }
-  });
-
-  const report = {
-    atlasRequirements: finalAtlasRequirements,
-    definedAttachments: Array.from(definedAttachments).sort(),
-    requirementsMap: Object.fromEntries(
-      Array.from(attachmentRequirements.entries()).map(([name, contexts]) => [name, Array.from(contexts)])
-    ),
-    skinStructure: Object.fromEntries(
-      Array.from(skinAttachments.entries()).map(([skinName, slots]) =>
-        [skinName, Object.fromEntries(Array.from(slots.entries()).map(([slotName, attsMap]) => [slotName, Array.from(attsMap.keys())]))]
-      )
-    ),
-    errors,
-    warnings,
-    stats: {
-      totalAttachments: attachmentRequirements.size,
-      totalSkins: skinAttachments.size,
-      totalErrors: errors.length,
-      totalWarnings: warnings.length
-    }
+    return null;
   };
 
-  return report;
+  if (spineData && spineData.skins) {
+    for (const skinName of Object.keys(spineData.skins)) {
+      const skin = spineData.skins[skinName];
+      for (const slotName of Object.keys(skin)) {
+        const attachments = skin[slotName];
+        for (const attachmentName of Object.keys(attachments)) {
+          const attachment = attachments[attachmentName];
+          const resolved = resolveRegionName(attachmentName, attachment);
+          if (resolved) textureNames.add(resolved);
+        }
+      }
+    }
+  }
+  
+  return {
+    atlasRequirements: Array.from(textureNames).sort(),
+    definedAttachments: Array.from(textureNames).sort(),
+    requirementsMap: {},
+    skinStructure: {},
+    errors: [],
+    warnings: [],
+    stats: {
+      totalAttachments: textureNames.size,
+      totalSkins: spineData.skins ? Object.keys(spineData.skins).length : 0,
+      totalErrors: 0,
+      totalWarnings: 0
+    }
+  };
 }
+
+
 
 // Usage example with validation
 function validateSpineAttachments(spineData, atlasRegions = []) {
@@ -977,22 +803,78 @@ async function loadSpineAssets() {
     const spineAtlasLoader = new PIXI.spine.core.AtlasAttachmentLoader(lastAtlas);
     const spineJsonParser = new PIXI.spine.core.SkeletonJson(spineAtlasLoader);
 
-    // Enhanced error handling for missing attachments
-    const originalReadAttachment = spineJsonParser.readAttachment.bind(spineJsonParser);
-    spineJsonParser.readAttachment = function (map, skin, slotIndex, name) {
+    // Fallback: when a region is missing, return a dummy RegionAttachment instead of throwing.
+    // This lets the animation run while emitting a warning.
+    (function installMissingRegionFallback() {
       try {
-        return originalReadAttachment(map, skin, slotIndex, name);
-      } catch (err) {
-        if (err.message && err.message.includes("Region not found")) {
-          showTerminal(`⚠️ Skipping missing attachment: ${name} (slot ${slotIndex})`);
-          return null; // Graceful fallback
+        const AtlasAttachmentLoader = PIXI.spine.core.AtlasAttachmentLoader;
+        if (!AtlasAttachmentLoader.__missingRegionPatched) {
+          // create a 1x1 dummy base texture (transparent)
+          const canvas = document.createElement('canvas');
+          canvas.width = canvas.height = 1;
+          const ctx = canvas.getContext('2d');
+          ctx.clearRect(0, 0, 1, 1);
+          const dummyBase = PIXI.BaseTexture.from(canvas);
+
+          const orig = AtlasAttachmentLoader.prototype.newRegionAttachment;
+          AtlasAttachmentLoader.prototype.newRegionAttachment = function (skin, name, path) {
+            try {
+              return orig.call(this, skin, name, path);
+            } catch (err) {
+              // Only handle missing/region-not-found errors here
+              const msg = (err && err.message) ? err.message : String(err);
+              if (!/Region not found/i.test(msg)) throw err;
+              showTerminal(`⚠️ Missing region "${name}" — using dummy texture (animation will continue)`);
+
+              // Build a minimal fake region object expected by RegionAttachment
+              const fakeRegion = {
+                name: name,
+                x: 0, y: 0,
+                width: 1, height: 1,
+                u: 0, v: 0, u2: 1, v2: 1,
+                offset: [0, 0, 1, 1],
+                originalWidth: 1,
+                originalHeight: 1,
+                rotate: false,
+                page: { rendererObject: dummyBase }
+              };
+
+              const RegionAttachment = PIXI.spine.core.RegionAttachment;
+              const attachment = new RegionAttachment(name);
+              // setRegion is used by runtime to configure UVs/offsets
+              if (typeof attachment.setRegion === 'function') {
+                attachment.setRegion(fakeRegion);
+              } else {
+                // defensive fallback: assign region directly
+                attachment.region = fakeRegion;
+              }
+              return attachment;
+            }
+          };
+
+          AtlasAttachmentLoader.__missingRegionPatched = true;
         }
-        throw err; // Re-throw other errors
+      } catch (e) {
+        // if patching fails, don't block loading—just log
+        showTerminal('Warning: could not install missing-region fallback: ' + (e.message || e));
       }
-    };
+    })();
 
     showTerminal('Creating skeleton data...');
-    skeletonData = spineJsonParser.readSkeletonData(spineData);
+    try {
+      skeletonData = spineJsonParser.readSkeletonData(spineData);
+    } catch (err) {
+      // Handle specific deform/attachment errors by stripping deform timelines and retrying once
+      if (err && err.message && err.message.includes('Deform attachment not found')) {
+        showTerminal('⚠️ Parser failed due to deform attachment references. Stripping deform timelines and retrying...');
+        const removed = stripDeformTimelines(spineData);
+        showTerminal(`Removed deform entries from ${removed} animation(s). Retrying parse...`);
+        // Retry parse
+        skeletonData = spineJsonParser.readSkeletonData(spineData);
+      } else {
+        throw err;
+      }
+    }
     showTerminal('Skeleton data created successfully');
 
     // Create and setup Spine object
@@ -1004,16 +886,17 @@ async function loadSpineAssets() {
 
     spineObj = new PIXI.spine.Spine(skeletonData);
 
-    // Auto-center and scale
-    spineObj.x = app.renderer.width / 2;
-    spineObj.y = app.renderer.height / 2;
+    // Auto-center and scale using canvas container
+    const containerRect = canvasContainer.getBoundingClientRect();
+    spineObj.x = containerRect.width / 2;
+    spineObj.y = containerRect.height / 2;
 
     // Wait one frame for bounds to be calculated
     await new Promise(resolve => requestAnimationFrame(resolve));
 
     const bounds = spineObj.getBounds();
-    const scaleX = (app.renderer.width * 0.8) / bounds.width;
-    const scaleY = (app.renderer.height * 0.8) / bounds.height;
+    const scaleX = (containerRect.width * 0.8) / bounds.width;
+    const scaleY = (containerRect.height * 0.8) / bounds.height;
     spineObj.scale.set(Math.min(scaleX, scaleY, 0.8));
 
     showTerminal(`Bounds: ${Math.round(bounds.width)}x${Math.round(bounds.height)}, Scale: ${spineObj.scale.x.toFixed(2)}`);
@@ -1038,6 +921,9 @@ async function loadSpineAssets() {
     showTerminal(`✅ Successfully loaded! ${animations.length} animations, ${getSkinCount(skeletonData)} skins`);
     validationStatus.textContent = 'Loaded successfully';
     validationStatus.className = 'success';
+    
+    // Switch to animation modal after successful load
+    showAnimationModal();
 
   } catch (error) {
     showError('Loading failed: ' + error.message);
@@ -1172,15 +1058,17 @@ function readFileAsText(file) {
 // Window resize handler
 window.addEventListener('resize', () => {
   if (spineObj) {
-    spineObj.x = app.renderer.width / 2;
-    spineObj.y = app.renderer.height / 2;
+    // Use canvas container dimensions instead of window
+    const containerRect = canvasContainer.getBoundingClientRect();
+    spineObj.x = containerRect.width / 2;
+    spineObj.y = containerRect.height / 2;
 
     // Wait for next frame to get accurate bounds
     requestAnimationFrame(() => {
       if (spineObj) {
         const bounds = spineObj.getBounds();
-        const scaleX = (app.renderer.width * 0.8) / bounds.width;
-        const scaleY = (app.renderer.height * 0.8) / bounds.height;
+        const scaleX = (containerRect.width * 0.8) / bounds.width;
+        const scaleY = (containerRect.height * 0.8) / bounds.height;
         spineObj.scale.set(Math.min(scaleX, scaleY, 0.8));
       }
     });
@@ -1208,7 +1096,86 @@ document.addEventListener('keydown', (e) => {
   }
 });
 
+// Helper: remove deform timelines from Spine JSON (used as a safe retry when parser fails)
+function stripDeformTimelines(spineJson) {
+  if (!spineJson || !spineJson.animations) return 0;
+  let removed = 0;
+  const animations = spineJson.animations;
+
+  // animations may be an array or an object keyed by name
+  if (Array.isArray(animations)) {
+    animations.forEach(anim => {
+      if (anim && typeof anim === 'object' && anim.deform) {
+        delete anim.deform;
+        removed++;
+      }
+    });
+  } else if (typeof animations === 'object') {
+    Object.keys(animations).forEach(key => {
+      const anim = animations[key];
+      if (anim && typeof anim === 'object' && anim.deform) {
+        delete anim.deform;
+        removed++;
+      }
+    });
+  }
+
+  return removed;
+}
+
+// Modal switching functions
+function showFileUploadModal() {
+  fileUploadModal.style.display = 'block';
+  animationModal.style.display = 'none';
+}
+
+function showAnimationModal() {
+  fileUploadModal.style.display = 'none';
+  animationModal.style.display = 'block';
+}
+
+// Clear files button handler
+clearFilesButton.addEventListener('click', () => {
+  // Clear all files
+  files = { json: null, atlases: [], images: [] };
+  jsonInput.value = '';
+  atlasInput.value = '';
+  pngInput.value = '';
+  
+  // Clear spine object
+  if (spineObj) {
+    app.stage.removeChild(spineObj);
+    spineObj.destroy({ children: true, texture: true, baseTexture: true });
+    spineObj = null;
+  }
+  
+  // Clear selectors
+  animSelector.innerHTML = '<option value="">Select Animation</option>';
+  skinSelector.innerHTML = '<option value="">Select Skin</option>';
+  
+  // Clear validation results
+  validationResults = null;
+  skeletonData = null;
+  currentSkin = null;
+  
+  // Clear status displays
+  validationStatus.textContent = '';
+  missingAttachments.innerHTML = '';
+  animationStats.innerHTML = '';
+  
+  // Clear warnings and terminal
+  clearWarn();
+  clearTerminal();
+  
+  // Switch back to file upload modal
+  showFileUploadModal();
+  updateLoadButton();
+  
+  showTerminal('Files cleared. Ready for new upload.');
+});
+
 // Initialize
 updateLoadButton();
 clearTerminal();
 showTerminal('Spine Animation Preview Tool Ready\nDrop files or use the file inputs to get started');
+showFileUploadModal(); // Start with file upload modal
