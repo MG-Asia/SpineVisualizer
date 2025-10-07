@@ -16,7 +16,6 @@ const resizeObserver = new ResizeObserver(() => {
 });
 resizeObserver.observe(canvasContainer);
 
-const dropZone = document.getElementById('dropZone');
 const jsonInput = document.getElementById('jsonInput');
 const atlasInput = document.getElementById('atlasInput');
 const pngInput = document.getElementById('pngInput');
@@ -41,19 +40,7 @@ let currentSkin = null;
 const warnBox = document.getElementById('warnBox');
 const terminalBox = document.getElementById('terminalBox');
 
-// Drag & drop
-dropZone.addEventListener("dragover", e => {
-  e.preventDefault();
-  dropZone.classList.add('dragover');
-});
-dropZone.addEventListener("dragleave", e => {
-  dropZone.classList.remove('dragover');
-});
-dropZone.addEventListener("drop", e => {
-  e.preventDefault();
-  dropZone.classList.remove('dragover');
-  handleFiles(e.dataTransfer.files);
-});
+
 
 // File selectors
 jsonInput.addEventListener("change", e => {

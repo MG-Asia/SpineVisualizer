@@ -13,18 +13,20 @@
             <!-- File Upload Modal -->
             <div id="fileUploadModal" class="modal">
                 <div class="modal-content">
-                    <h3>Upload Spine Files</h3>
-                    <div id="dropZone">Drop PNG, Atlas & JSON here</div>
+                    <h3><i class="icon">📁</i> Upload Spine Files</h3>
                     <div class="file-inputs">
-                        <label>JSON File
+                        <div class="input-group">
+                            <label>JSON File</label>
                             <input type="file" id="jsonInput" accept=".json">
-                        </label>
-                        <label>Atlas Files
+                        </div>
+                        <div class="input-group">
+                            <label>Atlas Files</label>
                             <input type="file" id="atlasInput" accept=".atlas" multiple>
-                        </label>
-                        <label>PNG Images
+                        </div>
+                        <div class="input-group">
+                            <label>PNG Images</label>
                             <input type="file" id="pngInput" accept=".png" multiple>
-                        </label>
+                        </div>
                         <button id="loadButton" disabled>Load & Validate</button>
                     </div>
                 </div>
