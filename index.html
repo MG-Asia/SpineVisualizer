@@ -8,29 +8,48 @@
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
-    <div id="controls">
-        <div id="dropZone">Drop PNG, Atlas & JSON here</div>
-        <div class="file-inputs">
-            <label>JSON: <input type="file" id="jsonInput" accept=".json"></label>
-            <label>Atlas: <input type="file" id="atlasInput" accept=".atlas" multiple></label>
-            <label>PNG: <input type="file" id="pngInput" accept=".png" multiple></label>
-            <button id="loadButton" disabled>Load & Validate</button>
-        </div>
-        <div class="selectors">
-            <label>Skin: <select id="skinSelector"></select></label>
-            <label>Animation: <select id="animSelector"></select></label>
-            <div class="validation-info">
-                <span id="validationStatus"></span>
-                <button id="revalidateButton" style="display: none;">Re-validate</button>
+    <div id="leftPanel">
+        <div id="topPanel">
+            <!-- File Upload Modal -->
+            <div id="fileUploadModal" class="modal">
+                <div class="modal-content">
+                    <h3>Upload Spine Files</h3>
+                    <div id="dropZone">Drop PNG, Atlas & JSON here</div>
+                    <div class="file-inputs">
+                        <label>JSON: <input type="file" id="jsonInput" accept=".json"></label>
+                        <label>Atlas: <input type="file" id="atlasInput" accept=".atlas" multiple></label>
+                        <label>PNG: <input type="file" id="pngInput" accept=".png" multiple></label>
+                        <button id="loadButton" disabled>Load & Validate</button>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Animation Selector Modal -->
+            <div id="animationModal" class="modal" style="display: none;">
+                <div class="modal-content">
+                    <h3>Animation Controls</h3>
+                    <div class="selectors">
+                        <label>Skin: <select id="skinSelector"></select></label>
+                        <label>Animation: <select id="animSelector"></select></label>
+                        <div class="validation-info">
+                            <span id="validationStatus"></span>
+                            <button id="revalidateButton" style="display: none;">Re-validate</button>
+                        </div>
+                    </div>
+                    <div class="debug-info">
+                        <span id="missingAttachments"></span>
+                        <span id="animationStats"></span>
+                    </div>
+                    <button id="clearFilesButton">Clear Files</button>
+                </div>
             </div>
         </div>
-        <div class="debug-info">
-            <span id="missingAttachments"></span>
-            <span id="animationStats"></span>
-        </div>
+        
+        <div id="terminalBox"></div>
     </div>
+    
+    <div id="canvasContainer"></div>
     <div id="warnBox"></div>
-    <div id="terminalBox"></div>
     <script src="main.js"></script>
 </body>
 </html>

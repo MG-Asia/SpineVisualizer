@@ -1,5 +1,20 @@
-const app = new PIXI.Application({ backgroundColor: 0x1e1e1e, resizeTo: window });
-document.body.appendChild(app.view);
+const canvasContainer = document.getElementById('canvasContainer');
+const app = new PIXI.Application({ 
+  backgroundColor: 0x1e1e1e, 
+  width: canvasContainer.clientWidth,
+  height: canvasContainer.clientHeight
+});
+canvasContainer.appendChild(app.view);
+
+// Handle canvas container resize
+const resizeObserver = new ResizeObserver(() => {
+  app.renderer.resize(canvasContainer.clientWidth, canvasContainer.clientHeight);
+  if (spineObj) {
+    spineObj.x = canvasContainer.clientWidth / 2;
+    spineObj.y = canvasContainer.clientHeight / 2;
+  }
+});
+resizeObserver.observe(canvasContainer);
 
 const dropZone = document.getElementById('dropZone');
 const jsonInput = document.getElementById('jsonInput');
@@ -12,6 +27,9 @@ const revalidateButton = document.getElementById('revalidateButton');
 const validationStatus = document.getElementById('validationStatus');
 const missingAttachments = document.getElementById('missingAttachments');
 const animationStats = document.getElementById('animationStats');
+const fileUploadModal = document.getElementById('fileUploadModal');
+const animationModal = document.getElementById('animationModal');
+const clearFilesButton = document.getElementById('clearFilesButton');
 
 let files = { json: null, atlases: [], images: [] };
 let spineObj = null;
@@ -94,8 +112,9 @@ function showTerminal(msg) {
 }
 
 function clearTerminal() {
-  terminalBox.style.display = 'none';
   terminalBox.textContent = '';
+  // Keep terminal visible in new layout
+  terminalBox.style.display = 'block';
 }
 
 // **FIXED: Robust validation system with proper error handling**
@@ -880,16 +899,17 @@ async function loadSpineAssets() {
 
     spineObj = new PIXI.spine.Spine(skeletonData);
 
-    // Auto-center and scale
-    spineObj.x = app.renderer.width / 2;
-    spineObj.y = app.renderer.height / 2;
+    // Auto-center and scale using canvas container
+    const containerRect = canvasContainer.getBoundingClientRect();
+    spineObj.x = containerRect.width / 2;
+    spineObj.y = containerRect.height / 2;
 
     // Wait one frame for bounds to be calculated
     await new Promise(resolve => requestAnimationFrame(resolve));
 
     const bounds = spineObj.getBounds();
-    const scaleX = (app.renderer.width * 0.8) / bounds.width;
-    const scaleY = (app.renderer.height * 0.8) / bounds.height;
+    const scaleX = (containerRect.width * 0.8) / bounds.width;
+    const scaleY = (containerRect.height * 0.8) / bounds.height;
     spineObj.scale.set(Math.min(scaleX, scaleY, 0.8));
 
     showTerminal(`Bounds: ${Math.round(bounds.width)}x${Math.round(bounds.height)}, Scale: ${spineObj.scale.x.toFixed(2)}`);
@@ -914,6 +934,9 @@ async function loadSpineAssets() {
     showTerminal(`✅ Successfully loaded! ${animations.length} animations, ${getSkinCount(skeletonData)} skins`);
     validationStatus.textContent = 'Loaded successfully';
     validationStatus.className = 'success';
+    
+    // Switch to animation modal after successful load
+    showAnimationModal();
 
   } catch (error) {
     showError('Loading failed: ' + error.message);
@@ -1048,15 +1071,17 @@ function readFileAsText(file) {
 // Window resize handler
 window.addEventListener('resize', () => {
   if (spineObj) {
-    spineObj.x = app.renderer.width / 2;
-    spineObj.y = app.renderer.height / 2;
+    // Use canvas container dimensions instead of window
+    const containerRect = canvasContainer.getBoundingClientRect();
+    spineObj.x = containerRect.width / 2;
+    spineObj.y = containerRect.height / 2;
 
     // Wait for next frame to get accurate bounds
     requestAnimationFrame(() => {
       if (spineObj) {
         const bounds = spineObj.getBounds();
-        const scaleX = (app.renderer.width * 0.8) / bounds.width;
-        const scaleY = (app.renderer.height * 0.8) / bounds.height;
+        const scaleX = (containerRect.width * 0.8) / bounds.width;
+        const scaleY = (containerRect.height * 0.8) / bounds.height;
         spineObj.scale.set(Math.min(scaleX, scaleY, 0.8));
       }
     });
@@ -1111,7 +1136,59 @@ function stripDeformTimelines(spineJson) {
   return removed;
 }
 
+// Modal switching functions
+function showFileUploadModal() {
+  fileUploadModal.style.display = 'block';
+  animationModal.style.display = 'none';
+}
+
+function showAnimationModal() {
+  fileUploadModal.style.display = 'none';
+  animationModal.style.display = 'block';
+}
+
+// Clear files button handler
+clearFilesButton.addEventListener('click', () => {
+  // Clear all files
+  files = { json: null, atlases: [], images: [] };
+  jsonInput.value = '';
+  atlasInput.value = '';
+  pngInput.value = '';
+  
+  // Clear spine object
+  if (spineObj) {
+    app.stage.removeChild(spineObj);
+    spineObj.destroy({ children: true, texture: true, baseTexture: true });
+    spineObj = null;
+  }
+  
+  // Clear selectors
+  animSelector.innerHTML = '<option value="">Select Animation</option>';
+  skinSelector.innerHTML = '<option value="">Select Skin</option>';
+  
+  // Clear validation results
+  validationResults = null;
+  skeletonData = null;
+  currentSkin = null;
+  
+  // Clear status displays
+  validationStatus.textContent = '';
+  missingAttachments.innerHTML = '';
+  animationStats.innerHTML = '';
+  
+  // Clear warnings and terminal
+  clearWarn();
+  clearTerminal();
+  
+  // Switch back to file upload modal
+  showFileUploadModal();
+  updateLoadButton();
+  
+  showTerminal('Files cleared. Ready for new upload.');
+});
+
 // Initialize
 updateLoadButton();
 clearTerminal();
 showTerminal('Spine Animation Preview Tool Ready\nDrop files or use the file inputs to get started');
+showFileUploadModal(); // Start with file upload modal
