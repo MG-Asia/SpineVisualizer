@@ -797,22 +797,78 @@ async function loadSpineAssets() {
     const spineAtlasLoader = new PIXI.spine.core.AtlasAttachmentLoader(lastAtlas);
     const spineJsonParser = new PIXI.spine.core.SkeletonJson(spineAtlasLoader);
 
-    // Enhanced error handling for missing attachments
-    const originalReadAttachment = spineJsonParser.readAttachment.bind(spineJsonParser);
-    spineJsonParser.readAttachment = function (map, skin, slotIndex, name) {
+    // Fallback: when a region is missing, return a dummy RegionAttachment instead of throwing.
+    // This lets the animation run while emitting a warning.
+    (function installMissingRegionFallback() {
       try {
-        return originalReadAttachment(map, skin, slotIndex, name);
-      } catch (err) {
-        if (err.message && err.message.includes("Region not found")) {
-          showTerminal(`⚠️ Skipping missing attachment: ${name} (slot ${slotIndex})`);
-          return null; // Graceful fallback
+        const AtlasAttachmentLoader = PIXI.spine.core.AtlasAttachmentLoader;
+        if (!AtlasAttachmentLoader.__missingRegionPatched) {
+          // create a 1x1 dummy base texture (transparent)
+          const canvas = document.createElement('canvas');
+          canvas.width = canvas.height = 1;
+          const ctx = canvas.getContext('2d');
+          ctx.clearRect(0, 0, 1, 1);
+          const dummyBase = PIXI.BaseTexture.from(canvas);
+
+          const orig = AtlasAttachmentLoader.prototype.newRegionAttachment;
+          AtlasAttachmentLoader.prototype.newRegionAttachment = function (skin, name, path) {
+            try {
+              return orig.call(this, skin, name, path);
+            } catch (err) {
+              // Only handle missing/region-not-found errors here
+              const msg = (err && err.message) ? err.message : String(err);
+              if (!/Region not found/i.test(msg)) throw err;
+              showTerminal(`⚠️ Missing region "${name}" — using dummy texture (animation will continue)`);
+
+              // Build a minimal fake region object expected by RegionAttachment
+              const fakeRegion = {
+                name: name,
+                x: 0, y: 0,
+                width: 1, height: 1,
+                u: 0, v: 0, u2: 1, v2: 1,
+                offset: [0, 0, 1, 1],
+                originalWidth: 1,
+                originalHeight: 1,
+                rotate: false,
+                page: { rendererObject: dummyBase }
+              };
+
+              const RegionAttachment = PIXI.spine.core.RegionAttachment;
+              const attachment = new RegionAttachment(name);
+              // setRegion is used by runtime to configure UVs/offsets
+              if (typeof attachment.setRegion === 'function') {
+                attachment.setRegion(fakeRegion);
+              } else {
+                // defensive fallback: assign region directly
+                attachment.region = fakeRegion;
+              }
+              return attachment;
+            }
+          };
+
+          AtlasAttachmentLoader.__missingRegionPatched = true;
         }
-        throw err; // Re-throw other errors
+      } catch (e) {
+        // if patching fails, don't block loading—just log
+        showTerminal('Warning: could not install missing-region fallback: ' + (e.message || e));
       }
-    };
+    })();
 
     showTerminal('Creating skeleton data...');
-    skeletonData = spineJsonParser.readSkeletonData(spineData);
+    try {
+      skeletonData = spineJsonParser.readSkeletonData(spineData);
+    } catch (err) {
+      // Handle specific deform/attachment errors by stripping deform timelines and retrying once
+      if (err && err.message && err.message.includes('Deform attachment not found')) {
+        showTerminal('⚠️ Parser failed due to deform attachment references. Stripping deform timelines and retrying...');
+        const removed = stripDeformTimelines(spineData);
+        showTerminal(`Removed deform entries from ${removed} animation(s). Retrying parse...`);
+        // Retry parse
+        skeletonData = spineJsonParser.readSkeletonData(spineData);
+      } else {
+        throw err;
+      }
+    }
     showTerminal('Skeleton data created successfully');
 
     // Create and setup Spine object
@@ -1027,6 +1083,33 @@ document.addEventListener('keydown', (e) => {
     });
   }
 });
+
+// Helper: remove deform timelines from Spine JSON (used as a safe retry when parser fails)
+function stripDeformTimelines(spineJson) {
+  if (!spineJson || !spineJson.animations) return 0;
+  let removed = 0;
+  const animations = spineJson.animations;
+
+  // animations may be an array or an object keyed by name
+  if (Array.isArray(animations)) {
+    animations.forEach(anim => {
+      if (anim && typeof anim === 'object' && anim.deform) {
+        delete anim.deform;
+        removed++;
+      }
+    });
+  } else if (typeof animations === 'object') {
+    Object.keys(animations).forEach(key => {
+      const anim = animations[key];
+      if (anim && typeof anim === 'object' && anim.deform) {
+        delete anim.deform;
+        removed++;
+      }
+    });
+  }
+
+  return removed;
+}
 
 // Initialize
 updateLoadButton();
