@@ -322,32 +322,95 @@ async function validateSpineAssets() {
       )
     );
 
-    // Create texture map
+    // Create texture map (case-insensitive + basename support)
     const imageMap = {};
+    const addImageKey = (k, url) => {
+      const key = String(k || '').trim();
+      if (!key) return;
+      imageMap[key] = url;
+      imageMap[key.toLowerCase()] = url;
+    };
+    const basenameOf = (s) => {
+      const str = String(s || '');
+      const slash = Math.max(str.lastIndexOf('/'), str.lastIndexOf('\\'));
+      return (slash >= 0 ? str.slice(slash + 1) : str).trim();
+    };
     files.images.forEach(imgFile => {
-      imageMap[imgFile.name] = URL.createObjectURL(imgFile);
+      const url = URL.createObjectURL(imgFile);
+      addImageKey(imgFile.name, url);
+      addImageKey(basenameOf(imgFile.name), url);
     });
 
     // Parse atlas and collect regions
     const allRegions = new Set();
-    const textureLoader = (line, callback) => {
-      const url = imageMap[line.trim()];
-      if (!url) {
-        callback(null);
-        return;
+    const dummyBaseTexture = (() => {
+      const canvas = document.createElement('canvas');
+      canvas.width = canvas.height = 1;
+      const ctx = canvas.getContext('2d');
+      ctx && ctx.clearRect(0, 0, 1, 1);
+      return PIXI.BaseTexture.from(canvas);
+    })();
+
+    // Some exporters omit required page header lines (size/format/filter/repeat).
+    // Pixi's atlas parser will then throw "Invalid line: <regionName>".
+    const normalizeAtlasText = (atlasText) => {
+      const lines = String(atlasText || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
+      const out = [];
+      let i = 0;
+      const isHeaderKV = (line) => /^\s*[a-zA-Z][a-zA-Z0-9_-]*\s*:\s*.*$/.test(line);
+      const isBlank = (line) => !String(line || '').trim();
+      while (i < lines.length) {
+        const line = lines[i];
+        out.push(line);
+
+        // Detect page name line: first non-empty line after a blank OR start-of-file.
+        // We only patch if the next non-empty line is NOT a key:value header.
+        const prev = i > 0 ? lines[i - 1] : '';
+        const looksLikePageName = !isBlank(line) && (i === 0 || isBlank(prev));
+        if (looksLikePageName) {
+          let j = i + 1;
+          while (j < lines.length && isBlank(lines[j])) j++;
+          if (j < lines.length && !isHeaderKV(lines[j])) {
+            // Insert minimal headers expected by PIXI's TextureAtlas parser.
+            out.push('size: 0,0');
+            out.push('format: RGBA8888');
+            out.push('filter: Linear,Linear');
+            out.push('repeat: none');
+          }
+        }
+        i++;
       }
+      return out.join('\n');
+    };
+
+    const normalizeAtlasPageKey = (raw) => {
+      const s = String(raw || '').trim();
+      if (!s) return '';
+      // Atlas page lines sometimes include folders; uploaded File.name never does.
+      const slash = Math.max(s.lastIndexOf('/'), s.lastIndexOf('\\'));
+      return (slash >= 0 ? s.slice(slash + 1) : s).trim();
+    };
+
+    const resolveImageUrlForAtlasPage = (pageLine) => {
+      const key = normalizeAtlasPageKey(pageLine);
+      return imageMap[key] || imageMap[key.toLowerCase()] || null;
+    };
+
+    const textureLoader = (line, callback) => {
+      const url = resolveImageUrlForAtlasPage(line);
       try {
-        const baseTexture = PIXI.BaseTexture.from(url);
-        callback(baseTexture);
+        // Important: returning null here can crash TextureAtlas internals (hasLoaded),
+        // which makes us skip the entire atlas and then attachments look "missing".
+        callback(url ? PIXI.BaseTexture.from(url) : dummyBaseTexture);
       } catch (e) {
         log(`Warning: Failed to load texture ${line}: ${e.message}`);
-        callback(null);
+        callback(dummyBaseTexture);
       }
     };
 
     for (let { content: atlasContent } of atlasContents) {
       try {
-        const atlas = new PIXI.spine.core.TextureAtlas(atlasContent, textureLoader);
+        const atlas = new PIXI.spine.core.TextureAtlas(normalizeAtlasText(atlasContent), textureLoader);
         if (atlas.regions) {
           atlas.regions.forEach(region => {
             if (region && region.name) {
@@ -484,24 +547,78 @@ async function loadSpineAssets() {
 
     log('Creating texture map...');
     const imageMap = {};
+    const addImageKey = (k, url) => {
+      const key = String(k || '').trim();
+      if (!key) return;
+      imageMap[key] = url;
+      imageMap[key.toLowerCase()] = url;
+    };
+    const basenameOf = (s) => {
+      const str = String(s || '');
+      const slash = Math.max(str.lastIndexOf('/'), str.lastIndexOf('\\'));
+      return (slash >= 0 ? str.slice(slash + 1) : str).trim();
+    };
     files.images.forEach(imgFile => {
-      imageMap[imgFile.name] = URL.createObjectURL(imgFile);
+      const url = URL.createObjectURL(imgFile);
+      addImageKey(imgFile.name, url);
+      addImageKey(basenameOf(imgFile.name), url);
     });
     log(`Created texture map for ${files.images.length} images`);
 
+    const dummyBaseTexture = (() => {
+      const canvas = document.createElement('canvas');
+      canvas.width = canvas.height = 1;
+      const ctx = canvas.getContext('2d');
+      ctx && ctx.clearRect(0, 0, 1, 1);
+      return PIXI.BaseTexture.from(canvas);
+    })();
+
+    const normalizeAtlasText = (atlasText) => {
+      const lines = String(atlasText || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
+      const out = [];
+      let i = 0;
+      const isHeaderKV = (line) => /^\s*[a-zA-Z][a-zA-Z0-9_-]*\s*:\s*.*$/.test(line);
+      const isBlank = (line) => !String(line || '').trim();
+      while (i < lines.length) {
+        const line = lines[i];
+        out.push(line);
+        const prev = i > 0 ? lines[i - 1] : '';
+        const looksLikePageName = !isBlank(line) && (i === 0 || isBlank(prev));
+        if (looksLikePageName) {
+          let j = i + 1;
+          while (j < lines.length && isBlank(lines[j])) j++;
+          if (j < lines.length && !isHeaderKV(lines[j])) {
+            out.push('size: 0,0');
+            out.push('format: RGBA8888');
+            out.push('filter: Linear,Linear');
+            out.push('repeat: none');
+          }
+        }
+        i++;
+      }
+      return out.join('\n');
+    };
+
+    const normalizeAtlasPageKey = (raw) => {
+      const s = String(raw || '').trim();
+      if (!s) return '';
+      const slash = Math.max(s.lastIndexOf('/'), s.lastIndexOf('\\'));
+      return (slash >= 0 ? s.slice(slash + 1) : s).trim();
+    };
+
+    const resolveImageUrlForAtlasPage = (pageLine) => {
+      const key = normalizeAtlasPageKey(pageLine);
+      return imageMap[key] || imageMap[key.toLowerCase()] || null;
+    };
+
     // Texture loader
     function textureLoader(line, callback) {
-      const url = imageMap[line.trim()];
-      if (!url) {
-        callback(null);
-        return;
-      }
+      const url = resolveImageUrlForAtlasPage(line);
       try {
-        const baseTexture = PIXI.BaseTexture.from(url);
-        callback(baseTexture);
+        callback(url ? PIXI.BaseTexture.from(url) : dummyBaseTexture);
       } catch (e) {
         log(`Failed to load texture: ${line}`);
-        callback(null);
+        callback(dummyBaseTexture);
       }
     }
 
@@ -514,7 +631,7 @@ async function loadSpineAssets() {
     log(`Processing ${atlasContents.length} atlas files...`);
     for (let atlasContent of atlasContents) {
       try {
-        const atlas = new PIXI.spine.core.TextureAtlas(atlasContent, textureLoader);
+        const atlas = new PIXI.spine.core.TextureAtlas(normalizeAtlasText(atlasContent), textureLoader);
         allRegions = allRegions.concat(atlas.regions || []);
         allPages = allPages.concat(atlas.pages || []);
         lastAtlas = atlas;
